@@ -1,7 +1,8 @@
 import requests
 from bs4 import BeautifulSoup
 
-from openai_local.openai import analyze_titles
+from openai_local.openai import analyze_titles as openai_analyze
+from openai_local.antropic import analyze_titles as anthropic_analyze
 
 FINBERT_URL = "http://127.0.0.1:5000/analyze"
 
@@ -11,9 +12,9 @@ def analyze_sentiment(texts, model="finbert"):
         res = requests.post(FINBERT_URL, json={"text": texts, "model": model})
         return res.json()
     elif model == "gpt-5-mini":
-        
-        # Use the GPT-5 Mini model
-        return analyze_titles(texts)
+        return openai_analyze(texts)
+    elif model == "claude-haiku":
+        return anthropic_analyze(texts)
     else:
         raise ValueError("Unsupported model")
 

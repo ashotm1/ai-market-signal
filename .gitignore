@@ -22,8 +22,10 @@ Thumbs.db
 # Logs
 *.log
 
-# Data files (optional – keep if large/raw)
+# Data files
 data/
+idx/
+parsed/
 *.csv
 *.json
 
