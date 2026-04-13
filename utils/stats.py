@@ -4,7 +4,7 @@ stats.py — Print pipeline stats based on current CSV state.
 import os
 import pandas as pd
 
-PARSED = "parsed"
+DATA = "data"
 
 
 def section(title):
@@ -14,7 +14,7 @@ def section(title):
 
 
 def load(filename, **kwargs):
-    path = os.path.join(PARSED, filename)
+    path = os.path.join(DATA, filename)
     if not os.path.exists(path):
         return None
     return pd.read_csv(path, **kwargs)
@@ -36,21 +36,26 @@ def main():
         print(f"  Has EX-99:          {has_ex99.sum()}")
         print(f"  No EX-99:           {(~has_ex99).sum()}")
 
-    # ── prs.csv ───────────────────────────────────────
-    df_prs = load("prs.csv")
-    if df_prs is not None:
-        section("prs.csv — PR classifications")
-        print(f"  Total PRs:          {len(df_prs)}")
+    # ── ex_99_classified.csv ──────────────────────────────────
+    df_ex = load("ex_99_classified.csv")
+    if df_ex is not None:
+        section("ex_99_classified.csv — classified exhibits")
+        total = len(df_ex)
+        prs = df_ex["is_pr"].sum() if "is_pr" in df_ex.columns else 0
+        print(f"  Total classified:   {total}")
+        print(f"  Is PR:              {prs}  ({prs/total*100:.1f}%)")
+        print(f"  Not PR:             {total - prs}  ({(total-prs)/total*100:.1f}%)")
 
+        df_prs = df_ex[df_ex["is_pr"] == True] if "is_pr" in df_ex.columns else df_ex
         if "heuristic" in df_prs.columns:
             print("\n  By heuristic label:")
             for label, count in df_prs["heuristic"].value_counts().items():
                 pct = count / len(df_prs) * 100
                 print(f"    {label:<12} {count:>5}  ({pct:.1f}%)")
 
-        heuristics = [h for h in ["H1", "H2", "H3", "H4", "H5", "H6", "H7"] if h in df_prs.columns]
+        heuristics = [h for h in ["H1", "H2", "H3", "H4", "H5", "H6"] if h in df_prs.columns]
         if heuristics:
-            print("\n  Heuristic fire rates:")
+            print("\n  Heuristic fire rates (PRs only):")
             for h in heuristics:
                 fired = df_prs[h].sum()
                 pct = fired / len(df_prs) * 100

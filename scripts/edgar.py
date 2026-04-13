@@ -1,11 +1,21 @@
 """
 edgar.py — SEC EDGAR fetching utilities.
-Provides functions to fetch EX-99.x exhibit URLs from filing index pages.
+Provides functions to fetch EX-99.x exhibit URLs from filing index pages,
+and to resolve CIK → ticker with a persistent disk cache.
 """
+import json
+import os
 import re
 from bs4 import BeautifulSoup
 
-HEADERS = {"User-Agent": "YourName your@email.com"}
+_SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT")
+if not _SEC_USER_AGENT:
+    raise EnvironmentError(
+        "SEC_USER_AGENT env var is not set. "
+        "Set it to 'Your Name your@email.com' as required by SEC EDGAR fair-access policy."
+    )
+HEADERS = {"User-Agent": _SEC_USER_AGENT}
+CIK_CACHE_FILE = "data/cik_tickers.json"
 SEC_BASE = "https://www.sec.gov"
 SEC_ARCHIVES = "https://www.sec.gov/Archives/"
 
@@ -83,6 +93,33 @@ async def fetch_index(client, index_url):
         return {"ex99_urls": [], "acceptance_dt": None, "items": []}
 
     return parse_index(r.text)
+
+
+def load_cik_cache() -> dict:
+    """Load CIK → ticker cache from disk. Returns empty dict if not found."""
+    if os.path.exists(CIK_CACHE_FILE):
+        with open(CIK_CACHE_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_cik_cache(cache: dict):
+    """Persist CIK → ticker cache to disk."""
+    with open(CIK_CACHE_FILE, "w") as f:
+        json.dump(cache, f)
+
+
+async def fetch_ticker(client, cik: int) -> str | None:
+    """Resolve primary exchange ticker for a CIK via SEC submissions API."""
+    url = f"https://data.sec.gov/submissions/CIK{cik:010d}.json"
+    try:
+        r = await client.get(url, headers=HEADERS)
+        if r.status_code != 200:
+            return None
+        tickers = r.json().get("tickers", [])
+        return tickers[0] if tickers else None
+    except Exception:
+        return None
 
 
 async def fetch_html(client, url):

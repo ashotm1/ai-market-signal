@@ -12,7 +12,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from edgar import fetch_html, HEADERS
 
-INPUT_CSV = "parsed/combined_disagreements.csv"
+INPUT_CSV = "data/combined_disagreements.csv"
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0
 

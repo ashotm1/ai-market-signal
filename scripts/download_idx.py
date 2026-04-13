@@ -1,11 +1,15 @@
 import argparse
 import asyncio
-import httpx
 import os
+import time
+import httpx
 from datetime import date, timedelta
 
-HEADERS = {"User-Agent": "yourname@example.com"}
+_SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "YourName your@email.com")
+HEADERS = {"User-Agent": _SEC_USER_AGENT}
 IDX_DIR = "idx"
+BATCH_SIZE = 10
+BATCH_INTERVAL = 1.0  # seconds between batches → 10 req/s
 
 
 def _quarter(d: date) -> str:
@@ -46,7 +50,14 @@ async def _download_one(client: httpx.AsyncClient, d: date) -> None:
 async def _download_all(dates: list) -> None:
     os.makedirs(IDX_DIR, exist_ok=True)
     async with httpx.AsyncClient() as client:
-        await asyncio.gather(*[_download_one(client, d) for d in dates])
+        for i in range(0, len(dates), BATCH_SIZE):
+            batch = dates[i:i + BATCH_SIZE]
+            t_start = time.monotonic()
+            await asyncio.gather(*[_download_one(client, d) for d in batch])
+            elapsed = time.monotonic() - t_start
+            remaining = BATCH_INTERVAL - elapsed
+            if remaining > 0 and i + BATCH_SIZE < len(dates):
+                await asyncio.sleep(remaining)
 
 
 def _parse_args():

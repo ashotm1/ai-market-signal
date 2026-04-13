@@ -1,7 +1,7 @@
 """
 batch_filter.py — Check which 8-K filings have EX-99 exhibits.
-Reads parsed/8k.csv, fetches filing index pages, saves rows with EX-99 URLs,
-acceptance_dt, and 8-K item numbers to parsed/8k_ex99.csv.
+Reads data/8k.csv, fetches filing index pages, saves rows with EX-99 URLs,
+acceptance_dt, and 8-K item numbers to data/8k_ex99.csv.
 
 Rate: BATCH_SIZE=10 per BATCH_INTERVAL=1.0s → exactly 10 req/s.
 Append-safe: skips index URLs already present in the output CSV.
@@ -15,8 +15,8 @@ from edgar import fetch_index, SEC_ARCHIVES
 
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0
-INPUT_CSV = "parsed/8k.csv"
-OUTPUT_CSV = "parsed/8k_ex99.csv"
+INPUT_CSV = "data/8k.csv"
+OUTPUT_CSV = "data/8k_ex99.csv"
 
 
 async def _process_filing(client, row):

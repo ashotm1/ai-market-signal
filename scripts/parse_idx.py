@@ -4,7 +4,7 @@ import re
 import pandas as pd
 
 IDX_DIR = "idx"
-OUTPUT_DIR = "parsed"
+OUTPUT_DIR = "data"
 
 
 def _parse_fixed(path):
@@ -46,21 +46,47 @@ def parse_idx_file(path):
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+    output_csv = os.path.join(OUTPUT_DIR, "8k.csv")
+    output_parquet = os.path.join(OUTPUT_DIR, "8k.parquet")
+
+    if os.path.exists(output_csv):
+        existing = pd.read_csv(output_csv, usecols=["idx_file"])
+        processed = set(existing["idx_file"])
+        print(f"{len(processed)} idx files already processed — skipping")
+    else:
+        processed = set()
+
     idx_files = sorted(glob.glob(os.path.join(IDX_DIR, "*.idx")))
     if not idx_files:
         print("No IDX files found in idx/")
         return
 
-    all_8k = []
-    for path in idx_files:
-        df = parse_idx_file(path)
-        print(f"{os.path.basename(path)} -> {len(df)} 8-K filings", flush=True)
-        all_8k.append(df)
+    write_header = not os.path.exists(output_csv)
+    new_total = 0
 
-    combined = pd.concat(all_8k, ignore_index=True).drop_duplicates(subset="File Name")
-    combined.to_parquet(os.path.join(OUTPUT_DIR, "8k.parquet"), index=False)
-    combined.to_csv(os.path.join(OUTPUT_DIR, "8k.csv"), index=False)
-    print(f"\nTotal: {len(combined)} unique 8-K filings saved to {OUTPUT_DIR}/")
+    for path in idx_files:
+        fname = os.path.basename(path)
+        if fname in processed:
+            continue
+        df = parse_idx_file(path)
+        df["idx_file"] = fname
+        print(f"{fname} -> {len(df)} 8-K filings", flush=True)
+        if not df.empty:
+            df.to_csv(output_csv, mode="a", header=write_header, index=False)
+            write_header = False
+        new_total += len(df)
+
+    if new_total == 0:
+        print("Nothing new to process.")
+    else:
+        print(f"\n{new_total} new 8-K filings appended to {output_csv}")
+
+    if not os.path.exists(output_csv):
+        print("No data written — nothing to build parquet from.")
+        return
+    full = pd.read_csv(output_csv)
+    full.to_parquet(output_parquet, index=False)
+    print(f"Rebuilt {output_parquet} ({len(full)} total rows)")
 
 
 if __name__ == "__main__":
