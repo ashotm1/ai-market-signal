@@ -71,14 +71,56 @@ _DIVIDEND          = re.compile(r"dividends?", re.IGNORECASE)
 _NASDAQ_ALERT      = re.compile(r"minimum bid price|nasdaq notification", re.IGNORECASE)
 _NEW_PRODUCT       = re.compile(r"unveils|\blaunches\b|\bintroduces\b", re.IGNORECASE)
 _OFFERING          = re.compile(r"registered direct offering|announces pricing|\boffering\b", re.IGNORECASE)
-_MA                = re.compile(r"\bmerger\b|\bacquires\b|to acquire|to merge", re.IGNORECASE)
+_MA                = re.compile(
+    r"\bmerger\b|\bacquires\b|to acquire|to merge|\btender offer\b|\bacquisition\b|\bdivest"
+    r"|\bcommitted to.{0,20}transaction\b|\bclosing expected\b"
+    r"|to be acquired|definitive agreement.{0,30}(?:acqui|merg|sale)"
+    r"|sale to.{0,20}(?:private equity|PE firm|\bfirm\b)"
+    r"|take.{0,10}private",
+    re.IGNORECASE,
+)
 _REPORTS           = re.compile(r"\breports\b", re.IGNORECASE)
-_PERSONNEL         = re.compile(r"\bappointments?\b|\bappoints?\b|\bexecutive\b.{0,40}(?:update|names|departure)", re.IGNORECASE)
+_PERSONNEL         = re.compile(
+    r"\bappointments?\b|\bappoints?\b"
+    r"|\bexecutive\b.{0,40}(?:update|names|departure|transitions?|changes?)"
+    r"|\bretires?\b|\bdeparture\b"
+    r"|\bchief\s+(?:executive|financial|operating|marketing|technology|medical)\s+officer\b"
+    r"|\bC[FOM]O\b|\bCEO\b|\bCOO\b|\bCTO\b|\bCMO\b"
+    r"|\bleadership\s+(?:changes?|transitions?|updates?)"
+    r"|\bjoins?\b.{0,30}(?:board of directors|advisory board|board as)"
+    r"|\bsucceeds?\b.{0,30}(?:as|CEO|CFO|COO|president|chairman)"
+    r"|\belects?\b.{0,30}(?:director|chairman|president)"
+    r"|\bnamed\b.{0,30}(?:CEO|CFO|COO|CTO|president|chairman|director)",
+    re.IGNORECASE,
+)
 _AGREEMENT         = re.compile(r"\bagreement\b|\bdeal\b", re.IGNORECASE)
+_COLLABORATION     = re.compile(r"strategic collaboration|collaboration agreement|\blicensing\s+agreement\b|strategic partnership|strategic alliance|co-development agreement", re.IGNORECASE)
+_DEBT_OFFERING     = re.compile(r"senior notes|senior unsecured|debt restructuring|notes offering|credit facility|\bnotes due\b|credit facilities|exchangeable.*debentures|secured.*credit|\b\d+\.?\d*%\s+(?:senior|notes|debentures)", re.IGNORECASE)
+_REBRANDING        = re.compile(r"name change|\brebrands?\b|announces new name|formerly known as", re.IGNORECASE)
+_BUYBACK           = re.compile(r"share repurchase|stock repurchase|\bbuyback\b|repurchase program", re.IGNORECASE)
+_ASSET_TRANSACTION = re.compile(r"asset sale|sale of.{0,30}(?:operations|division|unit|subsidiary|\bassets?\b)|\bdivests?\b|disposition of", re.IGNORECASE)
+_SPAC              = re.compile(r"business combination|over-allotment|separate trading.{0,20}(?:shares|warrants)|de-spac", re.IGNORECASE)
+_REGULATORY        = re.compile(r"commission (?:approves?|authorizes?)|authorizes? new rates|regulatory approval(?! of drug| of therapy| of treatment)|restores? compliance|nasdaq.*(?:compliance|rule)", re.IGNORECASE)
+_OPERATIONAL_UPDATE= re.compile(r"assets under management|\bAUM\b|monthly production|operational update|business update|\boutlook\b(?!.{0,20}(?:drug|trial|therapy))|annual report|shareholder letter|corporate update", re.IGNORECASE)
+_INVESTOR_EVENT    = re.compile(r"to participate|to present at|to host|investor day|analyst day|to speak at|conference call scheduled|to ring the bell|schedules.*(?:earnings call|earnings release)", re.IGNORECASE)
+_CONTRACT          = re.compile(r"\bawarded?\b.{0,30}(?:contract|order|grant|funding)|\bwins?\b.{0,30}contract|\bsecures?\b.{0,30}(?:contract|order)|\breceives?\b.{0,30}order\b", re.IGNORECASE)
+_FINANCIAL_UPDATE  = re.compile(r"record.{0,30}(?:commitments?|investments?)|distribution rate|net asset value|\bNAV\b", re.IGNORECASE)
 _CLINICAL          = re.compile(
     r"to presents?.{0,40}data|data.{0,40}to present"
-    r"|phase [123i]+[abi]?\b|fda (?:approval|clearance|designation|grants)"
-    r"|clinical (?:trial|data|results)|\btrial results\b",
+    r"|phase [123i]+[abi]?\s+(?:study|trial|data|results|clinical|readout|dose)"
+    r"|phase [123]/[123]"
+    r"|\bPDUFA\b"
+    r"|fda (?:approval|clearance|designation|grants|breakthrough)"
+    r"|clinical (?:trial|data|results|studies|development|pathway)"
+    r"|\btrial results\b|\bregistrational trial\b"
+    r"|510\(?k\)?|breakthrough device"
+    r"|complete response letter|\bCRL\b"
+    r"|(?:first|initial).{0,20}(?:commercial|patient).{0,20}(?:case|treatment|use)"
+    r"|\btopline\b|\bpivotal.{0,20}(?:study|trial|data)\b"
+    r"|\bIND\b.{0,20}(?:clearance|submission|filing)"
+    r"|\bNDA\b|\bBLA\b|\bsNDA\b|\bsBLA\b"
+    r"|orphan drug|rare disease designation"
+    r"|\benrolls?\b.{0,20}(?:first|initial).{0,20}patient",
     re.IGNORECASE,
 )
 
@@ -86,22 +128,46 @@ _CLINICAL          = re.compile(
 def classify_catalyst(title):
     """
     Classify catalyst types from PR title using keyword patterns.
-    Returns list of matched catalyst tags, or ['other'] if no match.
+    Returns list of matched catalyst tags, or ['other'].
+
+    Tags split into two groups:
+      SIGNAL     — goes to LLM feature extraction + model training
+      EXCLUSION  — skip LLM extraction (low/no price signal)
     """
     if not title:
         return ["other"]
-    tags = []
-    if _PRIVATE_PLACEMENT.search(title): tags.append("private_placement")
-    if _SPLIT.search(title):             tags.append("split")
-    if _DIVIDEND.search(title):          tags.append("dividend")
-    if _NASDAQ_ALERT.search(title):      tags.append("nasdaq_alert")
-    if _NEW_PRODUCT.search(title):       tags.append("new_product")
-    if _OFFERING.search(title):          tags.append("offering")
-    if _MA.search(title):                tags.append("m&a")
-    if _CLINICAL.search(title):          tags.append("clinical")
-    if _REPORTS.search(title) and _EARNINGS.search(title): tags.append("earnings")
-    if _PERSONNEL.search(title):          tags.append("personnel")
-    if _AGREEMENT.search(title):         tags.append("agreement")
+
+    checks = [
+        # ── SIGNAL tags ───────────────────────────────────────────────────────
+        (_CLINICAL,           "clinical"),
+        (_PRIVATE_PLACEMENT,  "private_placement"),
+        (_COLLABORATION,      "collaboration"),
+        (_MA,                 "m&a"),
+        (_ASSET_TRANSACTION,  "asset_transaction"),
+        (_NEW_PRODUCT,        "new_product"),
+        (_CONTRACT,           "contract"),
+        (_AGREEMENT,          "agreement"),
+        # ── EXCLUSION tags ────────────────────────────────────────────────────
+        (_OFFERING,           "offering"),
+        (_DEBT_OFFERING,      "debt_offering"),
+        (_PERSONNEL,          "personnel"),
+        (_BUYBACK,            "buyback"),
+        (_SPLIT,              "split"),
+        (_DIVIDEND,           "dividend"),
+        (_NASDAQ_ALERT,       "nasdaq_alert"),
+        (_SPAC,               "spac"),
+        (_REBRANDING,         "rebranding"),
+        (_INVESTOR_EVENT,     "investor_event"),
+        (_REGULATORY,         "regulatory"),
+        (_OPERATIONAL_UPDATE, "operational_update"),
+        (_FINANCIAL_UPDATE,   "financial_update"),
+    ]
+
+    tags = [tag for pattern, tag in checks if pattern.search(title)]
+
+    if _REPORTS.search(title) and _EARNINGS.search(title):
+        tags.append("earnings")
+
     return tags if tags else ["other"]
 
 
@@ -115,25 +181,29 @@ def _parse_soup(html_text):
 
 def _is_bold(el):
     """Return True if element or any descendant carries bold styling."""
-    style = el.get("style", "").replace(" ", "")
-    if "font-weight:700" in style or "font-weight:bold" in style:
+    style = el.get("style", "")
+    if "font-weight:700" in style.replace(" ", "") or "font-weight:bold" in style.replace(" ", ""):
+        return True
+    if re.search(r"font\s*:[^;]*\bbold\b", style, re.IGNORECASE):
         return True
     if el.find(["b", "strong"]):
         return True
     for child in el.find_all(True):
-        s = child.get("style", "").replace(" ", "")
-        if "font-weight:700" in s or "font-weight:bold" in s:
+        s = child.get("style", "")
+        if "font-weight:700" in s.replace(" ", "") or "font-weight:bold" in s.replace(" ", ""):
+            return True
+        if re.search(r"font\s*:[^;]*\bbold\b", s, re.IGNORECASE):
             return True
     return False
 
 
 def _bold_title(soup):
-    """Return text of first bold <p> or bold <font> (in <div>) with 4+ words, or None."""
+    """Return text of first valid bold <p> or bold <font> (in <div>) with 4+ words, or None."""
     for p in soup.find_all("p", limit=20):
         if not _is_bold(p):
             continue
-        text = p.get_text(" ", strip=True)
-        if len(text.split()) >= 4:
+        text = " ".join(p.get_text(" ", strip=True).split())
+        if len(text.split()) >= 4 and _is_valid_title(text):
             return text
     # Fallback: <font> inside <div> that is bold
     for font in soup.find_all("font", limit=20):
@@ -142,8 +212,8 @@ def _bold_title(soup):
         is_bold = _is_bold(font) or bool(font.find_parent(["b", "strong"]))
         if not is_bold:
             continue
-        text = font.get_text(" ", strip=True)
-        if len(text.split()) >= 4:
+        text = " ".join(font.get_text(" ", strip=True).split())
+        if len(text.split()) >= 4 and _is_valid_title(text):
             return text
     return None
 
@@ -202,12 +272,97 @@ def classify_heuristic(signals):
     return None
 
 
+_TITLE_GARBAGE = re.compile(
+    r"^for more information|^for immediate release|^contacts?:|^media contact|^investor contact"
+    r"|^source:|^about ",
+    re.IGNORECASE,
+)
+
+
+def _is_valid_title(text: str) -> bool:
+    """Return False if text looks like a dateline, contact block, or boilerplate."""
+    if not text:
+        return False
+    if text.rstrip().endswith(":"):
+        return False
+    if len(text.split()) > 35:
+        return False
+    if _STANDALONE_DATE.search(text) and len(text.split()) < 8:
+        return False  # short dateline e.g. "SALT LAKE CITY, UT – March 12, 2026"
+    if _TITLE_GARBAGE.search(text):
+        return False
+    return True
+
+
+_PLAIN_TITLE_VERB = re.compile(
+    r"\b(announces?|appoints?|completes?|launches?|introduces?|acquires?|divests?|"
+    r"names?\s+new|elects?\s+|strengthens?|establishes?|enters?\s+into|expands?\b)",
+    re.IGNORECASE,
+)
+
+# Leading junk: EDGAR file basenames ("bod_janx2026xfinal-nr"), "-more-" markers,
+# single-separator slugs ("jpattenpr_v2"), digit-embedded slugs ("ex991pressrelease")
+_JUNK_LEAD = re.compile(
+    r"^(?:-\w+-|[a-z0-9]+(?:[_-][a-z0-9]+){1,}|[a-z]+\d+[a-z][a-z0-9]*)$",
+    re.IGNORECASE,
+)
+
+
+def _plain_title(words):
+    """
+    Fallback: scan raw words for a title-like sentence containing a PR action verb.
+    Returns title string or None.
+    """
+    # Skip leading XBRL tokens and EDGAR file-basename junk
+    while words and (_SKIP_TOKENS.match(words[0]) or _JUNK_LEAD.match(words[0])):
+        words = words[1:]
+
+    if not words:
+        return None
+
+    # Work from the start of cleaned words
+    text = " ".join(words[:80])
+
+    m = _PLAIN_TITLE_VERB.search(text)
+    if not m:
+        return None
+
+    # Take from start of text through verb + up to 15 words after
+    suffix = text[m.end() :].split()[:25]
+    candidate = (text[: m.end()] + (" " + " ".join(suffix) if suffix else "")).strip()
+
+    # Strip leading single-word section headers (e.g. "News", "Source")
+    candidate = re.sub(r"^(?:News|Source|Alert|Notice|Update)\s+", "", candidate, flags=re.IGNORECASE)
+
+    # Limit to 35 words
+    candidate = " ".join(candidate.split()[:35])
+
+    # Trim at standalone date + any trailing all-caps city name before it
+    dl = _STANDALONE_DATE.search(candidate)
+    if dl:
+        before_date = candidate[: dl.start()]
+        before_date = re.sub(r"\s+[A-Z]{2,}(?:\s+[A-Z][a-zA-Z]+)*\s*$", "", before_date)
+        candidate = before_date.strip().rstrip(",–—- ")
+
+    return candidate if _is_valid_title(candidate) else None
+
+
+def _strip_slug(title: str) -> str:
+    """Strip leading EDGAR filename slug(s) and skip-tokens from a title string."""
+    words = title.split()
+    while words and (_JUNK_LEAD.match(words[0]) or _SKIP_TOKENS.match(words[0])):
+        words = words[1:]
+    return " ".join(words).strip()
+
+
 def extract_title(html_text):
-    """
-    Extract press release title from HTML.
-    """
-    soup, _ = _parse_soup(html_text)
-    return _bold_title(soup)
+    """Extract press release title from HTML."""
+    soup, words = _parse_soup(html_text)
+    title = _bold_title(soup)
+    if title:
+        return _strip_slug(title) or None
+    result = _plain_title(list(words))
+    return _strip_slug(result) if result else None
 
 
 async def extract_title_llm(html_text):
@@ -224,7 +379,7 @@ async def extract_title_llm(html_text):
         words.pop(0)
     if not words:
         return None
-    excerpt = " ".join(words[:50])
+    excerpt = " ".join(words[:100])
     message = await _anthropic_client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=50,
@@ -253,7 +408,7 @@ async def classify_llm(html_text):
     if not words:
         return None
 
-    excerpt = " ".join(words[:100])
+    excerpt = " ".join(words[:300])
 
     message = await _anthropic_client.messages.create(
         model="claude-haiku-4-5-20251001",

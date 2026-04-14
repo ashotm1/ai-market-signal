@@ -41,6 +41,19 @@ OUTPUT_BARS_CSV    = "data/price_bars.csv"        # raw 1-min OHLCV bars
 OUTPUT_DAILY_CSV   = "data/daily_bars.csv"        # raw daily OHLCV bars (pre-PR window)
 OUTPUT_DETAILS_CSV = "data/ticker_details.csv"    # ticker details as of filing date
 
+# Signal-group catalysts to fetch prices for (see classifier.py classify_catalyst)
+_TARGET_CATALYSTS = {
+    "clinical", "private_placement", "collaboration",
+    "m&a", "asset_transaction", "new_product", "contract", "agreement",
+}
+
+
+def _is_target(val):
+    try: tags = ast.literal_eval(val)
+    except Exception: tags = [val]
+    return bool(set(tags) & _TARGET_CATALYSTS)
+
+
 # T+N offsets in milliseconds
 _OFFSETS_MS = {
     "5m":  5  * 60 * 1000,
@@ -149,17 +162,34 @@ def _normalize_date(d) -> str:
     return f"{s[:4]}-{s[4:6]}-{s[6:]}"
 
 
+_PRICE_COLS = ["cik", "ex99_url", "company", "date_filed", "acceptance_dt"]
+
+
+def _price_row(row, ticker, date_str: str, changes: dict) -> dict:
+    """Build a fixed-schema price_data row — immune to classifier column changes."""
+    return {
+        **{col: row.get(col) for col in _PRICE_COLS},
+        "ticker":   ticker,
+        "date_str": date_str,
+        "price_t0": changes.get("price_t0"),
+        **{f"change_{l}_pct": changes.get(f"change_{l}_pct") for l in _OFFSETS_MS},
+    }
+
+
 def _flatten_details(ticker: str, date_str: str, d: dict) -> dict:
     """Pick the fields we want from a Polygon ticker details response."""
     return {
         "ticker":                         ticker,
         "date_str":                       date_str,
         "name":                           d.get("name"),
+        "type":                           d.get("type"),
         "market_cap":                     d.get("market_cap"),
         "weighted_shares_outstanding":    d.get("weighted_shares_outstanding"),
         "share_class_shares_outstanding": d.get("share_class_shares_outstanding"),
         "primary_exchange":               d.get("primary_exchange"),
         "sic_description":                d.get("sic_description"),
+        "total_employees":                d.get("total_employees"),
+        "list_date":                      d.get("list_date"),
     }
 
 
@@ -174,11 +204,6 @@ async def run():
     pr_df = pd.read_csv(INPUT_CSV)
     pr_df = pr_df[pr_df["is_pr"] == True].reset_index(drop=True)
 
-    _TARGET_CATALYSTS = {"m&a", "clinical", "private_placement", "new_product"}
-    def _is_target(val):
-        try: tags = ast.literal_eval(val)
-        except Exception: tags = [val]
-        return bool(set(tags) & _TARGET_CATALYSTS)
     pr_df = pr_df[pr_df["catalyst"].apply(_is_target)].reset_index(drop=True)
     print(f"Loaded {len(pr_df)} PR rows from {INPUT_CSV} (catalyst filter: {_TARGET_CATALYSTS})")
 
@@ -216,6 +241,14 @@ async def run():
         print(f"  {len(fetched)} rows already processed — skipping")
     else:
         fetched: set = set()
+
+    # Pre-load (ticker, date_str) pairs already fetched in prior runs so we
+    # skip all 3 Polygon calls — bars_cache alone can't guard across runs.
+    fetched_td: set = set()
+    if os.path.exists(OUTPUT_DETAILS_CSV):
+        _td = pd.read_csv(OUTPUT_DETAILS_CSV, usecols=["ticker", "date_str"])
+        fetched_td = set(zip(_td["ticker"], _td["date_str"]))
+        print(f"  {len(fetched_td)} (ticker, date_str) pairs already fetched — skipping Polygon calls")
 
     bars_cache: dict    = {}   # (ticker, date_str) → list[dict]
     daily_cache: dict   = {}   # (ticker, date_str) → list[dict]
@@ -259,26 +292,19 @@ async def run():
     try:
         async with httpx.AsyncClient(timeout=30) as poly_client:
             for _, row in pr_df.iterrows():
-                ticker    = row["ticker"]
-                date_str  = row["date_str"]
-                base      = row.to_dict()
+                ticker   = row["ticker"]
+                date_str = row["date_str"]
 
                 if (row["cik"], row["ex99_url"]) in fetched:
                     continue
 
                 if pd.isna(ticker) or not ticker:
-                    rows_out.append({
-                        **base,
-                        "price_t0": None,
-                        **{f"change_{l}_pct": None for l in _OFFSETS_MS},
-                    })
+                    rows_out.append(_price_row(row, ticker, date_str, {}))
                     continue
-
-               
 
                 cache_key = (ticker, date_str)
 
-                if cache_key not in bars_cache:
+                if cache_key not in bars_cache and cache_key not in fetched_td:
                     print(f"\n  {ticker}  {date_str}", flush=True)
 
                     # Call 1 — 1-min intraday bars
@@ -308,12 +334,17 @@ async def run():
                     if details:
                         details_rows.append(_flatten_details(ticker, date_str, details))
 
+                    if not details:
+                        print(f"  Skipping write — no details returned for {ticker} {date_str}", flush=True)
+                        continue
                     _flush()
                 else:
-                    bars = bars_cache[cache_key]
+                    # cache_key already fetched this run (bars_cache hit) or
+                    # in a prior run (fetched_td hit — bars not in memory)
+                    bars = bars_cache.get(cache_key, [])
 
                 changes = compute_changes(bars, row.get("acceptance_dt"))
-                rows_out.append({**base, **changes})
+                rows_out.append(_price_row(row, ticker, date_str, changes))
 
     except (KeyboardInterrupt, Exception) as exc:
         print(f"\nInterrupted ({exc.__class__.__name__}) — saving progress...", flush=True)

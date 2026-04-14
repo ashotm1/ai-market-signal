@@ -1,4 +1,4 @@
-# Stock PR Sentiment Analyzer
+# AI Market Signal
 
 Event-driven trading signal pipeline for small-cap stocks. Detects and classifies SEC 8-K press releases, extracts structured features via LLM, and pairs them with intraday price reactions for ML training.
 
@@ -13,7 +13,7 @@ Scope is non-earnings catalyst events only — M&A, clinical readouts, offerings
 2. `parse_idx.py` — parses index files, extracts 8-K rows → `data/8k.csv` (append-safe)
 3. `batch_filter.py` — fetches filing index pages, collects EX-99 exhibit URLs + acceptance timestamps + 8-K item numbers → `data/8k_ex99.csv`
 4. `pr_classifier.py` — fetches each EX-99, classifies as PR or not via heuristics + LLM fallback, tags catalyst type → `data/ex_99_classified.csv`. Skips pure earnings filings (item 2.02 only).
-5. `extract_features.py` — LLM feature extraction (Claude Haiku) on first 500 words of each confirmed PR → `data/pr_features.csv`. Supports real-time and Anthropic Batch API mode.
+5. `extract_features.py` — LLM feature extraction on first 500 words of each confirmed PR → `data/pr_features.csv`. Supports real-time and batch API mode.
 6. `fetch_prices.py` — resolves tickers via SEC submissions API, fetches price data from Polygon → `data/price_bars.csv`, `data/daily_bars.csv`, `data/ticker_details.csv`, `data/price_data.csv`
 
 **Classifier heuristics (H1–H6):**

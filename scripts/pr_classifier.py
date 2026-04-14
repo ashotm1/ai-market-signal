@@ -72,12 +72,13 @@ async def _run(df, fetched_urls, use_llm):
                 is_pr = heuristic is not None and heuristic != "earnings"
                 title = None
                 if is_pr or heuristic == "earnings":
-                    title = extract_title(html)
+                    title = extract_title(html) or None
                     if title is None and use_llm:
                         title = await extract_title_llm(html)
                         await asyncio.sleep(LLM_INTERVAL)
                 catalyst = classify_catalyst(title) if title else ["other"]
-                print(f"  {f'PR [{heuristic}]' if is_pr else 'not PR    '} | {title} | {', '.join(catalyst)}", flush=True)
+                label = f"PR [{heuristic}]" if is_pr else "not PR    "
+                print(f"  {label} | {title} | {', '.join(catalyst)}", flush=True)
                 results.append({**row.to_dict(), **signals, "heuristic": heuristic, "is_pr": is_pr, "title": title, "catalyst": catalyst})
 
             rows_out = [r for r in results if r is not None]
