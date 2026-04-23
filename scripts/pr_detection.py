@@ -1,6 +1,6 @@
 """
-classifier.py — Press release classification logic.
-Provides heuristic and LLM-based classifiers for SEC EX-99.x exhibits.
+pr_detection.py — Press release detection and catalyst classification logic.
+Provides heuristic patterns, title extraction, and LLM fallbacks for SEC EX-99.x exhibits.
 """
 import anthropic
 from bs4 import BeautifulSoup
@@ -113,7 +113,7 @@ _CRYPTO_TREASURY   = re.compile(
     re.IGNORECASE,
 )
 _FINANCIAL_UPDATE  = re.compile(r"record.{0,30}(?:commitments?|investments?)|distribution rate|net asset value|\bNAV\b", re.IGNORECASE)
-_CLINICAL          = re.compile(
+_BIOTECH           = re.compile(
     r"to presents?.{0,40}data|data.{0,40}to present"
     r"|phase [123i]+[abi]?\s+(?:study|trial|data|results|clinical|readout|dose)"
     r"|phase [123]/[123]"
@@ -147,7 +147,7 @@ def classify_catalyst(title):
 
     checks = [
         # ── SIGNAL tags ───────────────────────────────────────────────────────
-        (_CLINICAL,           "biotech"),
+        (_BIOTECH,            "biotech"),
         (_PRIVATE_PLACEMENT,  "private_placement"),
         (_COLLABORATION,      "collaboration"),
         (_MA,                 "m&a"),

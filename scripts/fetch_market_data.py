@@ -1,5 +1,5 @@
 """
-fetch_prices.py — Fetch and store raw price data for detected press releases.
+fetch_market_data.py — Fetch and store raw market data for detected press releases.
 
 Pipeline:
   1. Read data/ex_99_classified.csv (is_pr=True rows only)
@@ -42,7 +42,7 @@ OUTPUT_BARS_CSV    = "data/price_bars.csv"        # raw 1-min OHLCV bars
 OUTPUT_DAILY_CSV   = "data/daily_bars.csv"        # raw daily OHLCV bars (pre-PR window)
 OUTPUT_DETAILS_CSV = "data/ticker_details.csv"    # ticker details as of filing date
 
-# Signal-group catalysts to fetch prices for (see classifier.py classify_catalyst)
+# Signal-group catalysts to fetch prices for (see pr_detection.py classify_catalyst)
 _TARGET_CATALYSTS = {
     "biotech", "private_placement", "collaboration",
     "m&a", "new_product", "contract", "crypto_treasury",

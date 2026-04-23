@@ -13,7 +13,7 @@ import time
 import httpx
 import pandas as pd
 from edgar import fetch_html
-from classifier import classify_llm
+from pr_detection import classify_llm
 
 INPUT_CSV = "data/ex_99_classified.csv"
 BATCH_SIZE = 10

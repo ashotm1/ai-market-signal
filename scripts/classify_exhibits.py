@@ -1,10 +1,10 @@
 """
-regex_classifier.py — Classify EX-99 exhibits as press releases using heuristics only.
+classify_exhibits.py — Classify EX-99 exhibits as press releases using heuristics only.
 
 Reads data/8k_ex99.csv, fetches each EX-99, classifies using heuristics,
 extracts title, and applies regex catalyst tagging.
 Saves results to data/ex_99_classified.csv with is_pr and catalyst columns.
-Skips earnings-only filings (8-K item 2.02 with no signal items present).
+Skips earnings-only filings (item 2.02 with no real signal items — 7.01 Reg FD not counted).
 
 Rate: BATCH_SIZE=10 per BATCH_INTERVAL=1.0s → exactly 10 req/s.
 Append-safe: skips ex99_urls already present in the output CSV.
@@ -18,7 +18,7 @@ import httpx
 import pandas as pd
 
 from edgar import fetch_html
-from classifier import analyze_heuristics, classify_heuristic, extract_title, is_earnings, classify_catalyst
+from pr_detection import analyze_heuristics, classify_heuristic, extract_title, is_earnings, classify_catalyst
 
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0
@@ -84,9 +84,9 @@ def main():
     df = pd.read_csv(INPUT_CSV)
     df = df[df["ex99_url"].notna() & (df["ex99_url"] != "")].reset_index(drop=True)
     before = len(df)
-    _has_202    = df["items"].fillna("").str.contains(r"\b2\.02\b", regex=True)
-    _has_signal = df["items"].fillna("").str.contains(r"\b(?:7\.01|8\.01|1\.01|2\.01|3\.02|5\.01)\b", regex=True)
-    df = df[~(_has_202 & ~_has_signal)].reset_index(drop=True)
+    _has_202        = df["items"].fillna("").str.contains(r"\b2\.02\b", regex=True)
+    _has_real_signal = df["items"].fillna("").str.contains(r"\b(?:8\.01|1\.01|2\.01|3\.02|5\.01)\b", regex=True)
+    df = df[~(_has_202 & ~_has_real_signal)].reset_index(drop=True)
     print(f"Loaded {len(df)} EX-99 exhibits ({before - len(df)} earnings-only filings excluded)", flush=True)
 
     if os.path.exists(OUTPUT_CSV):

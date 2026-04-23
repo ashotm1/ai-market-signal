@@ -5,7 +5,7 @@ Use this when price_data.csv has a schema mismatch or duplicate rows from mixed 
 Reads ex_99_classified.csv + price_bars.csv, recomputes price changes, writes clean CSV.
 """
 import pandas as pd
-from scripts.fetch_prices import (
+from scripts.fetch_market_data import (
     _TARGET_CATALYSTS, _is_target, _normalize_date, _PRICE_COLS,
     _OFFSETS_MS, compute_changes, _price_row,
 )

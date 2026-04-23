@@ -3,7 +3,7 @@ clean_corrupt_bars.py — Remove corrupt (ticker, date_str) pairs from all price
 
 A pair is corrupt if any of its bars has t < 1e12 (not a valid 2024+ epoch ms timestamp).
 Removes all rows for those pairs from price_bars.csv, daily_bars.csv,
-ticker_details.csv, and price_data.csv so fetch_prices.py re-fetches them cleanly.
+ticker_details.csv, and price_data.csv so fetch_market_data.py re-fetches them cleanly.
 """
 import pandas as pd
 
@@ -64,7 +64,7 @@ def main():
         writer.writeheader()
         writer.writerows(kept)
 
-    print("\nDone. Run fetch_prices.py to re-fetch the corrupt pairs.")
+    print("\nDone. Run fetch_market_data.py to re-fetch the corrupt pairs.")
 
 
 if __name__ == "__main__":

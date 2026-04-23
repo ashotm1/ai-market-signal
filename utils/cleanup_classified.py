@@ -1,6 +1,6 @@
 """
 cleanup_classified.py — Post-processing cleanups for ex_99_classified.csv.
-Run after pr_classifier.py to fix known title extraction issues.
+Run after classify_exhibits.py to fix known title extraction issues.
 Each cleanup is a named, targeted function applied to a specific subset of rows.
 """
 import ast
@@ -10,7 +10,7 @@ import pandas as pd
 INPUT_CSV  = "data/ex_99_classified.csv"
 OUTPUT_CSV = "data/ex_99_classified.csv"
 
-# ── Shared patterns (mirrors classifier.py) ───────────────────────────────────
+# ── Shared patterns (mirrors pr_detection.py) ────────────────────────────────
 
 _SKIP_TOKENS = re.compile(r"^(EX-\d+\.\d+|Exhibit|\S+\.html?|\d+\.\d+|\d+)$", re.IGNORECASE)
 _JUNK_LEAD   = re.compile(

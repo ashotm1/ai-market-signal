@@ -1,3 +1,9 @@
+"""
+download_idx.py — Download SEC EDGAR daily index files.
+Fetches form.YYYYMMDD.idx files from the EDGAR daily-index archive.
+Skips weekends and holidays (SEC returns 403/404 for those dates).
+Append-safe: skips files already present in the idx/ directory.
+"""
 import argparse
 import asyncio
 import os
@@ -5,8 +11,7 @@ import time
 import httpx
 from datetime import date, timedelta
 
-_SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "YourName your@email.com")
-HEADERS = {"User-Agent": _SEC_USER_AGENT}
+from edgar import HEADERS
 IDX_DIR = "idx"
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0  # seconds between batches → 10 req/s

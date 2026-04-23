@@ -5,16 +5,16 @@ Steps (in order):
   1. download_idx.py     — download daily index files from EDGAR
   2. parse_idx.py        — parse index files → data/8k.csv
   3. batch_filter.py     — fetch filing index pages → data/8k_ex99.csv
-  4. regex_classifier.py — classify EX-99 exhibits → data/ex_99_classified.csv
-  5. llm_classifier.py   — (optional --llm) LLM catalyst classify for 'other' rows
-  6. fetch_prices.py     — (optional --prices) fetch Polygon price data for signal rows
+  4. classify_exhibits.py      — classify EX-99 exhibits → data/ex_99_classified.csv
+  5. classify_catalyst_llm.py  — (optional --llm) LLM catalyst classify for 'other' rows
+  6. fetch_market_data.py — (optional --prices) fetch Polygon market data for signal rows
 
 Each step is append-safe and skips already-processed rows.
 Feature extraction (extract_features.py) is run separately.
 
 Usage:
   python pipeline.py --date-from 2022-01-01 --date-to 2025-12-31
-  python pipeline.py --days 30 --llm --prices
+  python pipeline.py --days 30 --llm --market
 """
 import argparse
 import subprocess
@@ -41,9 +41,9 @@ def main():
     parser.add_argument("--date-to", metavar="YYYY-MM-DD", default=None,
                         help="End date for index download (default: today)")
     parser.add_argument("--llm", action="store_true",
-                        help="Run llm_classifier after regex (submits batch, polls, collects)")
-    parser.add_argument("--prices", action="store_true",
-                        help="Run fetch_prices after classification")
+                        help="Run classify_catalyst_llm after exhibits (submits batch, polls, collects)")
+    parser.add_argument("--market", action="store_true",
+                        help="Run fetch_market_data after classification")
     args = parser.parse_args()
 
     # Step 1 — download index files
@@ -59,13 +59,13 @@ def main():
     # Steps 2-4 — no args needed, each reads from previous step's output
     run(["scripts/parse_idx.py"],        "Step 2: parse_idx.py")
     run(["scripts/batch_filter.py"],     "Step 3: batch_filter.py")
-    run(["scripts/regex_classifier.py"], "Step 4: regex_classifier.py")
+    run(["scripts/classify_exhibits.py"], "Step 4: classify_exhibits.py")
 
     if args.llm:
-        run(["scripts/llm_classifier.py", "--run"], "Step 5: llm_classifier.py")
+        run(["scripts/classify_catalyst_llm.py", "--run"], "Step 5: classify_catalyst_llm.py")
 
-    if args.prices:
-        run(["scripts/fetch_prices.py"], "Step 6: fetch_prices.py")
+    if args.market:
+        run(["scripts/fetch_market_data.py"], "Step 6: fetch_market_data.py")
 
     print("\nPipeline complete.")
 

@@ -1,14 +1,14 @@
 """
-llm_classifier.py — LLM catalyst classification for unclassified press releases.
+classify_catalyst_llm.py — LLM catalyst classification for unclassified press releases.
 
 For rows where is_pr=True and catalyst=['other'], fetches the first ~150 words
-of the EX-99 content and uses Claude Haiku (batch API) to classify the catalyst.
+of the EX-99 content and uses Claude Sonnet (batch API) to classify the catalyst.
 Updates the catalyst column in-place in data/ex_99_classified.csv.
 
 Usage:
-  python scripts/llm_classifier.py --submit-batch   # fetch snippets, submit batch job
-  python scripts/llm_classifier.py --collect-batch  # collect results, update CSV
-  python scripts/llm_classifier.py --status         # check batch progress
+  python scripts/classify_catalyst_llm.py --submit-batch   # fetch snippets, submit batch job
+  python scripts/classify_catalyst_llm.py --collect-batch  # collect results, update CSV
+  python scripts/classify_catalyst_llm.py --status         # check batch progress
 """
 import argparse
 import ast

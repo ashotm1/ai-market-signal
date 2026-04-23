@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import httpx
 import pandas as pd
 
-from classifier import extract_title
+from pr_detection import extract_title
 from edgar import fetch_html
 
 INPUT_CSV     = "data/ex_99_classified.csv"
