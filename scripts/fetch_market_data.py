@@ -1,16 +1,20 @@
 """
 fetch_market_data.py — Fetch and store raw market data for detected press releases.
 
-Pipeline:
+Pipeline (EDGAR source):
   1. Read data/ex_99_classified.csv (is_pr=True rows only)
   2. For each unique CIK: resolve ticker via SEC submissions API
   3. For each unique (ticker, date): 3 sequential Polygon calls —
        a. 1-min OHLCV bars  → data/price_bars.csv
        b. Daily bars (40 calendar days prior) → data/daily_bars.csv
        c. Ticker details (market cap, shares, exchange as of that date) → data/ticker_details.csv
-  4. PR metadata row (cik, ex99_url, ticker, date_str) → data/price_data.csv (used as processed-set tracker)
+  4. PR metadata row → data/price_data.csv (dedup tracker)
 
-No computations — raw data only. Computations happen in a separate step.
+Pipeline (StockTitan source):
+  Same Polygon calls, ticker already in CSV — no CIK resolution.
+  Output → data/st_price_data.csv
+
+Dedup key: (ticker, date_str) — shared across both sources via ticker_details.csv.
 
 Requirements:
   Set MASSIVE_API_KEY env var (also accepted as POLYGON_API_KEY — same API, rebranded).
@@ -18,6 +22,10 @@ Requirements:
 Rate limits:
   Massive free tier: 5 calls/min  →  MASSIVE_INTERVAL = 12.1s between calls
   Paid tier: unlimited → set MASSIVE_INTERVAL = 0
+
+Usage:
+  python scripts/fetch_market_data.py                      # EDGAR source (default)
+  python scripts/fetch_market_data.py --source stocktitan  # StockTitan source
 """
 import argparse
 import ast
@@ -36,11 +44,13 @@ MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_A
 POLYGON_BASE = "https://api.polygon.io"
 MASSIVE_INTERVAL = 12.1      # seconds between Polygon calls (free tier: 5/min)
 
-INPUT_CSV          = "data/ex_99_classified.csv"
-OUTPUT_CSV         = "data/price_data.csv"       # computed price changes per PR
-OUTPUT_BARS_CSV    = "data/price_bars.csv"        # raw 1-min OHLCV bars
-OUTPUT_DAILY_CSV   = "data/daily_bars.csv"        # raw daily OHLCV bars (pre-PR window)
-OUTPUT_DETAILS_CSV = "data/ticker_details.csv"    # ticker details as of filing date
+EDGAR_INPUT_CSV    = "data/ex_99_classified.csv"
+EDGAR_OUTPUT_CSV   = "data/price_data.csv"
+ST_INPUT_CSV       = "data/stocktitan_news_filtered.csv"
+ST_OUTPUT_CSV      = "data/st_price_data.csv"
+OUTPUT_BARS_CSV    = "data/price_bars.csv"        # shared — raw 1-min OHLCV bars
+OUTPUT_DAILY_CSV   = "data/daily_bars.csv"        # shared — raw daily OHLCV bars
+OUTPUT_DETAILS_CSV = "data/ticker_details.csv"    # shared — dedup key lives here
 
 # Signal-group catalysts to fetch prices for (see pr_detection.py classify_catalyst)
 _TARGET_CATALYSTS = {
@@ -174,18 +184,61 @@ def compute_changes(bars: list, acceptance_dt: str | None, daily: list | None = 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 def _normalize_date(d) -> str:
-    """Convert YYYYMMDD (int or str) to YYYY-MM-DD."""
-    s = str(d)[:8]
+    """Convert YYYYMMDD (int or str) or MM/DD/YYYY to YYYY-MM-DD."""
+    s = str(d).strip()
+    if "/" in s:
+        return datetime.strptime(s.split()[0], "%m/%d/%Y").strftime("%Y-%m-%d")
+    s = s[:8]
     return f"{s[:4]}-{s[4:6]}-{s[6:]}"
 
 
-_PRICE_COLS = ["cik", "ex99_url", "company", "date_filed", "acceptance_dt"]
+def _normalize_acceptance_dt(dt_str: str) -> str | None:
+    """Convert StockTitan '04/25/2026 01:00 PM' to ISO '2026-04-25 13:00:00'."""
+    try:
+        return datetime.strptime(dt_str.strip(), "%m/%d/%Y %I:%M %p").strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
 
 
-def _price_row(row, ticker, date_str: str, changes: dict) -> dict:
-    """Build a fixed-schema price_data row — immune to classifier column changes."""
+def load_edgar(catalyst: str | None) -> pd.DataFrame:
+    df = pd.read_csv(EDGAR_INPUT_CSV)
+    df = df[df["is_pr"] == True].reset_index(drop=True)
+    catalyst_filter = {catalyst} if catalyst else _TARGET_CATALYSTS
+    df = df[df["catalyst"].apply(
+        lambda v: bool(set(ast.literal_eval(v) if isinstance(v, str) else [v]) & catalyst_filter)
+    )].reset_index(drop=True)
+    return df
+
+
+_ST_SIG_TAGS = {"acquisition", "partnership", "clinical trial", "crypto", "private placement", "fda approval"}
+
+
+def load_stocktitan(sig: bool = False) -> pd.DataFrame:
+    df = pd.read_csv(ST_INPUT_CSV)
+    df["date_str"]      = df["date"].apply(_normalize_date)
+    df["acceptance_dt"] = df["datetime"].apply(_normalize_acceptance_dt)
+    if sig:
+        def _has_sig_tag(tags_str):
+            if pd.isna(tags_str):
+                return False
+            tags = {t.strip().lower() for t in tags_str.split("|")}
+            return bool(tags & _ST_SIG_TAGS)
+        df = df[df["tags"].apply(_has_sig_tag)].reset_index(drop=True)
+    return df
+
+
+_EDGAR_PRICE_COLS = ["cik", "ex99_url", "company", "date_filed", "acceptance_dt"]
+
+
+def _price_row(row, ticker, date_str: str, changes: dict, source: str) -> dict:
+    if source == "stocktitan":
+        return {
+            **row.to_dict(),
+            "price_t0": changes.get("price_t0"),
+            **{f"change_{l}_pct": changes.get(f"change_{l}_pct") for l in _OFFSETS_MS},
+        }
     return {
-        **{col: row.get(col) for col in _PRICE_COLS},
+        **{col: row.get(col) for col in _EDGAR_PRICE_COLS},
         "ticker":   ticker,
         "date_str": date_str,
         "price_t0": changes.get("price_t0"),
@@ -212,63 +265,75 @@ def _flatten_details(ticker: str, date_str: str, d: dict) -> dict:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def run(catalyst: str | None = None):
+async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = False, refetch: bool = False):
     if not MASSIVE_API_KEY:
         raise RuntimeError(
             "Missing API key. Set MASSIVE_API_KEY or POLYGON_API_KEY environment variable."
         )
 
-    pr_df = pd.read_csv(INPUT_CSV)
-    pr_df = pr_df[pr_df["is_pr"] == True].reset_index(drop=True)
+    OUTPUT_CSV = ST_OUTPUT_CSV if source == "stocktitan" else EDGAR_OUTPUT_CSV
 
-    catalyst_filter = {catalyst} if catalyst else _TARGET_CATALYSTS
-    pr_df = pr_df[pr_df["catalyst"].apply(lambda v: bool(set(ast.literal_eval(v) if isinstance(v, str) else [v]) & catalyst_filter))].reset_index(drop=True)
-    print(f"Loaded {len(pr_df)} PR rows from {INPUT_CSV} (catalyst filter: {catalyst_filter})")
+    # ── Load input ────────────────────────────────────────────────────────────
+    if source == "stocktitan":
+        pr_df = load_stocktitan(sig=sig)
+        print(f"Loaded {len(pr_df)} rows from {ST_INPUT_CSV}{' (sig filter)' if sig else ''}")
+    else:
+        pr_df = load_edgar(catalyst)
+        print(f"Loaded {len(pr_df)} PR rows from {EDGAR_INPUT_CSV}")
 
-    # ── Step 1: SEC submissions — CIK → ticker (cached) ──────────────────────
-    unique_ciks = pr_df["cik"].unique()
-    cik_ticker: dict = load_cik_cache()
+    # ── CIK → ticker resolution (EDGAR only) ─────────────────────────────────
+    if source == "edgar":
+        unique_ciks = pr_df["cik"].unique()
+        cik_ticker: dict = load_cik_cache()
+        new_ciks = [cik for cik in unique_ciks if str(cik) not in cik_ticker]
+        print(f"\n{len(unique_ciks)} unique CIKs — {len(new_ciks)} to resolve...")
+        if new_ciks:
+            async with httpx.AsyncClient(timeout=20) as sec_client:
+                for cik in new_ciks:
+                    ticker = await fetch_ticker(sec_client, int(cik))
+                    cik_ticker[str(cik)] = ticker
+                    print(f"  CIK {cik} -> {ticker or 'no ticker'}", flush=True)
+                    await asyncio.sleep(0.15)
+            save_cik_cache(cik_ticker)
+        pr_df = pr_df.copy()
+        pr_df["ticker"]   = pr_df["cik"].astype(str).map(cik_ticker)
+        pr_df["date_str"] = pr_df["date_filed"].apply(_normalize_date)
 
-    new_ciks = [cik for cik in unique_ciks if str(cik) not in cik_ticker]
-    print(f"\n{len(unique_ciks)} unique CIKs in batch — {len(cik_ticker)} in cache total, {len(new_ciks)} to resolve...")
+    cutoff = (pd.Timestamp.today() - 2 * pd.tseries.offsets.BDay()).strftime("%Y-%m-%d")
+    pr_df = pr_df[pr_df["date_str"] <= cutoff].reset_index(drop=True)
+    print(f"  {len(pr_df)} rows after excluding last 2 trading days (cutoff {cutoff})")
 
-    if new_ciks:
-        async with httpx.AsyncClient(timeout=20) as sec_client:
-            for cik in new_ciks:
-                ticker = await fetch_ticker(sec_client, int(cik))
-                cik_ticker[str(cik)] = ticker
-                print(f"  CIK {cik} → {ticker or 'no ticker'}", flush=True)
-                await asyncio.sleep(0.15)
-        save_cik_cache(cik_ticker)
-
-    # ── Step 2: Annotate rows ─────────────────────────────────────────────────
-    pr_df = pr_df.copy()
-    pr_df["ticker"]   = pr_df["cik"].astype(str).map(cik_ticker)
-    pr_df["date_str"] = pr_df["date_filed"].apply(_normalize_date)
-
-    no_ticker  = pr_df["ticker"].isna().sum()
-    no_acc_dt  = pr_df["acceptance_dt"].isna().sum()
-    print(f"\n{no_ticker}/{len(pr_df)} rows missing ticker (will skip price fetch)")
+    no_ticker = pr_df["ticker"].isna().sum()
+    no_acc_dt = pr_df["acceptance_dt"].isna().sum()
+    print(f"\n{no_ticker}/{len(pr_df)} rows missing ticker")
     print(f"{no_acc_dt}/{len(pr_df)} rows missing acceptance_dt")
 
-    # ── Step 3: Fetch — 3 Polygon calls per unique (ticker, date) ────────────
-    # Build processed set from existing price_data for O(1) skip check
-    if os.path.exists(OUTPUT_CSV):
-        _existing = pd.read_csv(OUTPUT_CSV, usecols=["cik", "ex99_url"])
-        fetched: set = set(zip(_existing["cik"], _existing["ex99_url"]))
-        print(f"  {len(fetched)} rows already processed — skipping")
-    else:
-        fetched: set = set()
+    # ── Refetch: find incomplete rows (price_t0 not null but some changes null) ─
+    change_cols = [f"change_{l}_pct" for l in _OFFSETS_MS]
+    refetch_pairs: set = set()
+    if refetch and os.path.exists(OUTPUT_CSV):
+        _out = pd.read_csv(OUTPUT_CSV)
+        _out_complete = _out["price_t0"].notna()
+        _out_has_null = _out[change_cols].isnull().any(axis=1)
+        _out_old_enough = _out["date_str"] <= cutoff
+        _incomplete = _out[_out_complete & _out_has_null & _out_old_enough]
+        refetch_pairs = set(zip(_incomplete["ticker"], _incomplete["date_str"]))
+        if refetch_pairs:
+            _out_clean = _out[~(_out_complete & _out_has_null & _out_old_enough)]
+            _out_clean.to_csv(OUTPUT_CSV, index=False)
+            print(f"  {len(refetch_pairs)} incomplete rows removed from {OUTPUT_CSV} for re-fetch")
 
-    # Pre-load (ticker, date_str) pairs already fetched in prior runs so we
-    # skip all 3 Polygon calls — bars_cache alone can't guard across runs.
-    fetched_td: set = set()
-    if os.path.exists(OUTPUT_DETAILS_CSV):
-        _td = pd.read_csv(OUTPUT_DETAILS_CSV, usecols=["ticker", "date_str"])
-        fetched_td = set(zip(_td["ticker"], _td["date_str"]))
-        current_pairs = set(zip(pr_df["ticker"].dropna(), pr_df["date_str"]))
-        overlap = len(fetched_td & current_pairs)
-        print(f"  {overlap} (ticker, date_str) pairs already fetched — skipping Polygon calls")
+    # ── Dedup: (ticker, date_str) from both output CSVs ──────────────────────
+    fetched: set = set()
+    for path in (EDGAR_OUTPUT_CSV, ST_OUTPUT_CSV):
+        if os.path.exists(path):
+            _existing = pd.read_csv(path, usecols=["ticker", "date_str"])
+            fetched |= set(zip(_existing["ticker"], _existing["date_str"]))
+    fetched -= refetch_pairs  # allow re-fetch of incomplete rows
+    print(f"  {len(fetched)} (ticker, date_str) pairs already processed — skipping")
+    input_pairs = set(zip(pr_df["ticker"].fillna(""), pr_df["date_str"]))
+    to_fetch = len(input_pairs - fetched)
+    print(f"  {to_fetch}/{len(input_pairs)} input pairs to fetch")
 
     bars_cache: dict    = {}   # (ticker, date_str) → list[dict]
     daily_cache: dict   = {}   # (ticker, date_str) → list[dict]
@@ -315,16 +380,17 @@ async def run(catalyst: str | None = None):
                 ticker   = row["ticker"]
                 date_str = row["date_str"]
 
-                if (row["cik"], row["ex99_url"]) in fetched:
+                if (ticker, date_str) in fetched:
                     continue
 
                 if pd.isna(ticker) or not ticker:
-                    rows_out.append(_price_row(row, ticker, date_str, {}))
+                    rows_out.append(_price_row(row, ticker, date_str, {}, source))
+                    _flush()
                     continue
 
                 cache_key = (ticker, date_str)
 
-                if cache_key not in bars_cache and cache_key not in fetched_td:
+                if cache_key not in bars_cache:
                     print(f"\n  {ticker}  {date_str}", flush=True)
 
                     # Call 1 — ticker details (most failable: delisted, unknown ticker, bad date)
@@ -335,14 +401,16 @@ async def run(catalyst: str | None = None):
                     if not details:
                         print(f"  No details — skipping bars for {ticker} {date_str}", flush=True)
                         bars_cache[cache_key] = []
-                        rows_out.append(_price_row(row, ticker, date_str, {}))
+                        rows_out.append(_price_row(row, ticker, date_str, {}, source))
+                        _flush()
                         continue
 
                     market_cap = details.get("market_cap")
                     if market_cap and market_cap > 500_000_000:
                         print(f"  Skipping {ticker} — market cap ${market_cap/1e6:.0f}M > $500M", flush=True)
                         bars_cache[cache_key] = []
-                        rows_out.append(_price_row(row, ticker, date_str, {}))
+                        rows_out.append(_price_row(row, ticker, date_str, {}, source))
+                        _flush()
                         continue
 
                     # Call 2 — 1-min intraday bars (fails on weekends, halted stocks)
@@ -353,7 +421,8 @@ async def run(catalyst: str | None = None):
                     if not bars:
                         print(f"  No 1min bars — skipping daily for {ticker} {date_str}", flush=True)
                         bars_cache[cache_key] = []
-                        rows_out.append(_price_row(row, ticker, date_str, {}))
+                        rows_out.append(_price_row(row, ticker, date_str, {}, source))
+                        _flush()
                         continue
 
                     # Call 3 — daily bars (least failable)
@@ -376,15 +445,13 @@ async def run(catalyst: str | None = None):
                         daily_rows.append({"ticker": ticker, "date_str": date_str, **bar})
                     details_rows.append(_flatten_details(ticker, date_str, details))
 
-                    _flush()
                 else:
-                    # cache_key already fetched this run (bars_cache hit) or
-                    # in a prior run (fetched_td hit — bars not in memory)
                     bars = bars_cache.get(cache_key, [])
 
                 daily = daily_cache.get(cache_key, [])
                 changes = compute_changes(bars, row.get("acceptance_dt"), daily=daily or None)
-                rows_out.append(_price_row(row, ticker, date_str, changes))
+                rows_out.append(_price_row(row, ticker, date_str, changes, source))
+                _flush()
 
     except (KeyboardInterrupt, Exception) as exc:
         print(f"\nInterrupted ({exc.__class__.__name__}) — saving progress...", flush=True)
@@ -398,10 +465,16 @@ async def run(catalyst: str | None = None):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--source", choices=["edgar", "stocktitan"], default="edgar",
+                        help="input source (default: edgar)")
     parser.add_argument("--catalyst", metavar="NAME",
-                        help="Only fetch prices for rows matching this catalyst tag (e.g. crypto_treasury)")
+                        help="EDGAR only: filter by catalyst tag (e.g. crypto_treasury)")
+    parser.add_argument("--sig", action="store_true",
+                        help="StockTitan only: filter to significant tags (acquisition, partnership, clinical trial, crypto, private placement, fda approval)")
+    parser.add_argument("--refetch", action="store_true",
+                        help="re-fetch rows with partial price data (price_t0 set but some changes null)")
     args = parser.parse_args()
-    asyncio.run(run(catalyst=args.catalyst))
+    asyncio.run(run(source=args.source, catalyst=args.catalyst, sig=args.sig, refetch=args.refetch))
 
 
 if __name__ == "__main__":
