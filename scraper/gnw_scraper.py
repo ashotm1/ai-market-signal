@@ -1,40 +1,33 @@
 """
-gnw_scraper.py — Scrape GlobeNewsWire via monthly sitemaps.
+gnw_scraper.py — Scrape GlobeNewsWire via paginated search (Nasdaq + NYSE only).
 
-Parses sitemap metadata (ticker, title, date, keywords) for each month.
+Iterates day-by-day, paginates each day's results (pageSize=50).
+Extracts ticker from preview text via regex where available.
 
-Fields: date, time, datetime, ticker, exchange, tickers, title, url, keywords
-
-Sitemap coverage starts June 2023. Earlier dates are not supported.
+Fields: date, time, datetime, ticker, exchange, source, title, url
 
 Usage:
     python scraper/gnw_scraper.py                              # last 30 days
     python scraper/gnw_scraper.py --days 90
-    python scraper/gnw_scraper.py --from 2023-06-01 --to 2024-12-31
-    python scraper/gnw_scraper.py --from 2024-01-01 --tickers AAPL,MSFT
+    python scraper/gnw_scraper.py --from 2022-01-01 --to 2024-12-31
 """
 
 import argparse
 import csv
 import os
+import re
 import time
 import random
-from datetime import date, timedelta
-from xml.etree import ElementTree as ET
+from datetime import date, datetime, timedelta
 
+from bs4 import BeautifulSoup
 from curl_cffi import requests
 
 OUTPUT_CSV = "data/gnw_news.csv"
-SITEMAP_BASE = "https://sitemaps.globenewswire.com/news/en"
-SITEMAP_MIN_DATE = date(2023, 6, 1)
+BASE_URL   = "https://www.globenewswire.com"
+DELAY      = 2
 
-SITEMAP_DELAY = 0.5
-
-CSV_FIELDS = ["date", "time", "datetime", "ticker", "exchange", "tickers", "title", "url", "keywords"]
-
-SM_NS  = "http://www.sitemaps.org/schemas/sitemap/0.9"
-NEWS_NS = "http://www.google.com/schemas/sitemap-news/0.9"
-NS = {"sm": SM_NS, "news": NEWS_NS}
+CSV_FIELDS = ["date", "time", "datetime", "ticker", "exchange", "source", "title", "url"]
 
 HEADERS = {
     "User-Agent": (
@@ -48,81 +41,190 @@ HEADERS = {
     "Connection": "keep-alive",
 }
 
+# from pr_detection.py — matches "(NYSE: CCL)", "(NASDAQ: AAPL)", "(NYSE/LSE: CCL; NYSE: CUK)"
+# also matches without parens for GNW preview text: "NYSE American: TGB"
+_TICKER_RE = re.compile(
+    r"\(?(?P<exchange>NYSE American|NYSE Arca|NASDAQ GSM|NASDAQ CM|NASDAQ|NYSE|OTCQB|OTCQX)"
+    r"(?:/(?:NYSE|NASDAQ|LSE))?[:\s]+(?P<ticker>[A-Z]{1,6})[;,\s)]*",
+    re.IGNORECASE,
+)
 
-def parse_ticker(raw: str) -> tuple:
-    """'NASDAQ:AAPL, NYSE:XYZ' → (primary_ticker, primary_exchange, pipe_joined_tickers)"""
-    parts = [p.strip() for p in raw.split(",") if p.strip()]
-    tickers_all = []
-    primary_ticker = primary_exchange = ""
-    for p in parts:
-        if ":" in p:
-            exchange, ticker = p.split(":", 1)
-            tickers_all.append(ticker.strip())
-            if not primary_ticker:
-                primary_ticker = ticker.strip()
-                primary_exchange = exchange.strip()
-        else:
-            tickers_all.append(p)
-            if not primary_ticker:
-                primary_ticker = p
-    return primary_ticker, primary_exchange, "|".join(tickers_all)
+# matches GNW date strings: "April 30, 2026 17:50 ET"
+_DATE_RE = re.compile(
+    r'([A-Z][a-z]+ \d{1,2}, \d{4})\s+(\d{1,2}:\d{2})\s*ET'
+)
 
 
-def parse_dt(iso: str) -> tuple:
-    """'2024-01-31T23:40:30-05:00' → (date_str, time_str, datetime_str)"""
+DETAILS_CSV = "data/ticker_details.csv"
+
+
+def _load_name_ticker() -> dict:
+    """Build name→ticker lookup from ticker_details.csv (most recent entry per ticker)."""
+    if not os.path.exists(DETAILS_CSV):
+        return {}
+    lookup = {}
+    with open(DETAILS_CSV, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            name = (row.get("name") or "").strip()
+            ticker = (row.get("ticker") or "").strip()
+            if name and ticker:
+                lookup[name.lower()] = ticker
+    return lookup
+
+
+def _word_prefix_match(source: str, lookup: dict) -> str:
+    """Match source to a ticker_details name via word-level prefix, then first-2-word fallback."""
+    s_words = source.lower().strip().split()
+    if not s_words:
+        return ""
+    # pass 1: shorter is a full word-level prefix of longer
+    for name, ticker in lookup.items():
+        n_words = name.split()
+        shorter, longer = (s_words, n_words) if len(s_words) <= len(n_words) else (n_words, s_words)
+        if all(a == b for a, b in zip(shorter, longer)):
+            return ticker
+    # pass 2: first 2 words match (both must have at least 2 words)
+    if len(s_words) >= 2:
+        for name, ticker in lookup.items():
+            n_words = name.split()
+            if len(n_words) >= 2 and s_words[:2] == n_words[:2]:
+                return ticker
+    return ""
+
+
+def _search_url(date_str: str, page: int) -> str:
+    d = f"%5B{date_str}%2520TO%2520{date_str}%5D"
+    return f"{BASE_URL}/en/search/date/{d}/exchange/Nasdaq,NYSE/load/more?page={page}&pageSize=50"
+
+
+def parse_ticker(text: str) -> tuple:
+    """Extract first (ticker, exchange) from text, or ('', '')."""
+    m = _TICKER_RE.search(text)
+    if m:
+        return m.group("ticker").upper(), m.group("exchange").upper()
+    return "", ""
+
+
+def parse_date(text: str) -> tuple:
+    """Extract (date_str, time_str, datetime_str) from 'April 30, 2026 17:50 ET'."""
+    m = _DATE_RE.search(text)
+    if not m:
+        return "", "", ""
     try:
-        dt_part = iso[:19]
-        d, t = dt_part.split("T")
-        t_short = t[:5]
-        return d, t_short, f"{d} {t_short}"
-    except Exception:
-        return iso[:10], "", iso[:10]
+        d = datetime.strptime(m.group(1), "%B %d, %Y").strftime("%Y-%m-%d")
+        t = m.group(2)
+        return d, t, f"{d} {t}"
+    except ValueError:
+        return "", "", ""
 
 
-def fetch_sitemap(year: int, month: int, session) -> list:
-    url = f"{SITEMAP_BASE}/{year}-{month:02d}.xml"
-    try:
-        resp = session.get(url, headers=HEADERS, timeout=20)
-    except Exception as e:
-        print(f"  sitemap {year}-{month:02d}: request error — {e}")
-        return []
+def parse_page(html: str) -> list:
+    soup = BeautifulSoup(html, "html.parser")
+    items = []
 
-    if resp.status_code != 200:
-        print(f"  sitemap {year}-{month:02d}: status={resp.status_code}")
-        return []
-
-    try:
-        root = ET.fromstring(resp.content)
-    except ET.ParseError as e:
-        print(f"  sitemap {year}-{month:02d}: parse error — {e}")
-        return []
-
-    articles = []
-    for url_el in root.findall(f"{{{SM_NS}}}url"):
-        loc = url_el.findtext(f"{{{SM_NS}}}loc") or ""
-        if not loc or "/news-release/" not in loc or "/en/" not in loc:
+    for li in soup.find_all("li"):
+        # article link — must point to a news-release
+        a = li.find("a", href=lambda h: h and "/news-release/" in h)
+        if not a:
             continue
 
-        news_el = url_el.find(f"{{{NEWS_NS}}}news")
-        if news_el is None:
+        title = a.get_text(strip=True)
+        url   = a["href"]
+        if not url.startswith("http"):
+            url = BASE_URL + url
+
+        # company/source — link to organization search
+        org = li.find("a", href=lambda h: h and "/en/search/organization/" in h)
+        source = org.get_text(strip=True) if org else ""
+
+        # date from full li text
+        full_text = li.get_text(" ", strip=True)
+        d, t, dt  = parse_date(full_text)
+
+        # ticker from preview text (often contains "NYSE: XYZ")
+        ticker, exchange = parse_ticker(full_text)
+
+        if not title or not url:
             continue
 
-        pub_date    = news_el.findtext(f"{{{NEWS_NS}}}publication_date") or ""
-        title       = news_el.findtext(f"{{{NEWS_NS}}}title") or ""
-        raw_tickers = news_el.findtext(f"{{{NEWS_NS}}}stock_tickers") or ""
-        keywords    = news_el.findtext(f"{{{NEWS_NS}}}keywords") or ""
-
-        d, t, dt = parse_dt(pub_date)
-        ticker, exchange, tickers_all = parse_ticker(raw_tickers) if raw_tickers else ("", "", "")
-
-        articles.append({
+        items.append({
             "date": d, "time": t, "datetime": dt,
-            "ticker": ticker, "exchange": exchange, "tickers": tickers_all,
-            "title": title, "url": loc, "keywords": keywords,
+            "ticker": ticker, "exchange": exchange,
+            "source": source, "title": title, "url": url,
         })
 
-    return articles
+    return items
 
+
+def scrape_day(d: date, session, existing_urls: set, name_lookup: dict) -> tuple:
+    """Returns (total, new_count, blocked) where blocked=True signals a hard stop."""
+    date_str = d.strftime("%Y-%m-%d")
+    total = new_count = page = 0
+
+    while True:
+        page += 1
+        url = _search_url(date_str, page)
+        print(f"  {date_str} p{page}: fetching...", end=" ", flush=True)
+        try:
+            resp = session.get(url, headers=HEADERS, timeout=(10, 20))
+        except Exception as e:
+            print(f"error — {e}")
+            break
+
+        print(f"got {resp.status_code} {len(resp.content)//1024}KB", end=" ", flush=True)
+
+        if resp.status_code != 200:
+            print(f"— blocked")
+            return total, new_count, True
+
+        body = resp.text
+        _lower = body[:2000].lower()
+        if any(k in _lower for k in ("captcha", "access denied", "403 forbidden", "blocked", "robot")):
+            print(f"  {date_str} p{page}: BLOCKED (body) — stopping")
+            return total, new_count, True
+        if len(body) < 500:
+            print(f"  {date_str} p{page}: suspiciously small response ({len(body)}B) — may be blocked")
+
+        print(f"parsing...", end=" ", flush=True)
+        items = parse_page(body)
+        for item in items:
+            if not item["ticker"] and item["source"]:
+                item["ticker"] = _word_prefix_match(item["source"], name_lookup)
+        if not items:
+            print("0 items — done")
+            break
+
+        new = [i for i in items if i["url"] not in existing_urls]
+
+        # stop if all items are duplicates (GNW re-serving already-seen articles)
+        if len(new) == 0 and len(items) > 0:
+            print(f"all duplicates — done")
+            break
+
+        if new:
+            _append(new)
+            for i in new:
+                existing_urls.add(i["url"])
+
+        total     += len(items)
+        new_count += len(new)
+        print(f"{len(items)} items  {len(new)} new")
+
+        if len(items) < 50:
+            break  # last page
+
+        time.sleep(DELAY + random.uniform(0, 0.4))
+
+    return total, new_count, False
+
+
+def _append(rows: list):
+    file_exists = os.path.exists(OUTPUT_CSV)
+    with open(OUTPUT_CSV, "a", newline="\n", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerows(rows)
 
 
 def load_existing_urls() -> set:
@@ -132,24 +234,10 @@ def load_existing_urls() -> set:
         return {row["url"] for row in csv.DictReader(f)}
 
 
-def append_rows(rows: list):
-    file_exists = os.path.exists(OUTPUT_CSV)
-    with open(OUTPUT_CSV, "a", newline="\n", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(rows)
-
-
-def months_in_range(start: date, end: date):
-    """Yield (year, month) tuples from newest to oldest."""
-    seen = set()
+def date_range(start: date, end: date):
     d = end
     while d >= start:
-        ym = (d.year, d.month)
-        if ym not in seen:
-            seen.add(ym)
-            yield ym
+        yield d
         d -= timedelta(days=1)
 
 
@@ -157,62 +245,53 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--from", dest="from_date")
-    parser.add_argument("--to", dest="to_date")
-    parser.add_argument("--tickers", help="comma-separated ticker filter e.g. AAPL,MSFT")
+    parser.add_argument("--to",   dest="to_date")
     args = parser.parse_args()
 
     today = date.today()
     if args.from_date:
         start = date.fromisoformat(args.from_date)
-        end = date.fromisoformat(args.to_date) if args.to_date else today
+        end   = date.fromisoformat(args.to_date) if args.to_date else today
     else:
-        end = today
+        end   = today
         start = end - timedelta(days=args.days - 1)
 
-    if start < SITEMAP_MIN_DATE:
-        print(f"Warning: GNW sitemaps start {SITEMAP_MIN_DATE}. Clamping start date.")
-        start = SITEMAP_MIN_DATE
-
-    ticker_filter = {t.strip().upper() for t in args.tickers.split(",")} if args.tickers else None
-
-    print(f"Scraping {start} to {end}")
-    if ticker_filter:
-        print(f"Ticker filter: {ticker_filter}")
+    print(f"Scraping {start} to {end} ({(end - start).days + 1} days)")
     print(f"Output: {OUTPUT_CSV}\n")
 
     existing_urls = load_existing_urls()
     print(f"Already have {len(existing_urls)} articles in CSV\n")
 
-    session = requests.Session(impersonate="chrome124")
+    name_lookup = _load_name_ticker()
+    print(f"Loaded {len(name_lookup)} names from ticker_details for fallback matching\n")
+
+    session   = requests.Session(impersonate="chrome124")
     total_new = 0
+    empty_streak = 0
+    block_streak = 0
 
-    for year, month in months_in_range(start, end):
-        print(f"  {year}-{month:02d} ...", end=" ", flush=True)
-        articles = fetch_sitemap(year, month, session)
+    for d in date_range(start, end):
+        total, new, blocked = scrape_day(d, session, existing_urls, name_lookup)
+        total_new += new
+        print(f"  {d}  {total} articles  {new} new{' [BLOCKED]' if blocked else ''}")
 
-        # clamp to exact date range (sitemap is monthly, may include out-of-range dates)
-        articles = [
-            a for a in articles
-            if a["date"] and start <= date.fromisoformat(a["date"]) <= end
-        ]
+        if blocked:
+            block_streak += 1
+            if block_streak >= 2:
+                print("\n2 consecutive blocks — exiting")
+                break
+        else:
+            block_streak = 0
 
-        if ticker_filter:
-            articles = [
-                a for a in articles
-                if a["ticker"].upper() in ticker_filter
-                or any(t.upper() in ticker_filter for t in a["tickers"].split("|") if t)
-            ]
+        if total == 0 and not blocked:
+            empty_streak += 1
+            if empty_streak >= 7:
+                print("\n7 consecutive empty days — stopping")
+                break
+        else:
+            empty_streak = 0
 
-        new = [a for a in articles if a["url"] not in existing_urls]
-        print(f"{len(articles)} matched  {len(new)} new")
-
-        if new:
-            append_rows(new)
-            for a in new:
-                existing_urls.add(a["url"])
-            total_new += len(new)
-
-        time.sleep(SITEMAP_DELAY + random.uniform(0, 0.3))
+        time.sleep(DELAY + random.uniform(0, 0.4))
 
     print(f"\nDone. {total_new} new articles added to {OUTPUT_CSV}")
 
