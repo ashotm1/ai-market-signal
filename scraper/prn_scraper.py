@@ -68,45 +68,124 @@ def fetch_gz_index() -> list[str]:
     return [loc.text for loc in root.findall(".//sm:loc", NS) if loc.text]
 
 
-def parse_gz(gz_url: str) -> list[dict]:
-    """Download, decompress, and parse one gz sitemap. Returns list of row dicts."""
-    req = urllib.request.Request(gz_url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        raw = gzip.decompress(resp.read())
+_INVALID_XML_CHARS = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_URL_BLOCK    = re.compile(rb"<url>(.*?)</url>", re.DOTALL)
+_RX_LOC       = re.compile(rb"<loc>(https://[^<]+)</loc>")
+_RX_LASTMOD   = re.compile(rb"<lastmod>([^<]+)</lastmod>")
+_RX_CAPTION   = re.compile(rb"<image:caption>([^<]*)</image:caption>")
+_RX_IMG_LOC   = re.compile(rb"<image:loc>(https://[^<]+)</image:loc>")
 
-    root = ET.fromstring(raw)
+
+def _parse_xml(raw: bytes):
+    """Parse XML bytes with two fallbacks for malformed content."""
+    try:
+        return ET.fromstring(raw)
+    except ET.ParseError:
+        pass
+    try:
+        return ET.fromstring(_INVALID_XML_CHARS.sub(b"", raw))
+    except ET.ParseError:
+        pass
+    from lxml import etree
+    return etree.fromstring(raw, parser=etree.XMLParser(recover=True))
+
+
+def _regex_extract(raw: bytes) -> list[dict]:
+    """Extract entries via regex on raw bytes — handles any XML corruption."""
     rows = []
-    for url_el in root.findall("sm:url", NS):
-        loc     = url_el.findtext("sm:loc",                          namespaces=NS) or ""
-        lastmod = url_el.findtext("sm:lastmod",                      namespaces=NS) or ""
-        img_cap = url_el.findtext("image:image/image:caption",       namespaces=NS) or ""
-        img_url = url_el.findtext("image:image/image:loc",           namespaces=NS) or ""
-
-        if not loc:
+    for block in _URL_BLOCK.finditer(raw):
+        chunk = block.group(1)
+        loc_m = _RX_LOC.search(chunk)
+        if not loc_m:
             continue
+        loc     = loc_m.group(1).decode("utf-8", errors="replace")
+        lastmod = (_RX_LASTMOD.search(chunk) or type("", (), {"group": lambda s, n: b""})()).group(1)
+        if isinstance(lastmod, bytes):
+            lastmod = lastmod.decode("utf-8", errors="replace")
+        img_cap = (_RX_CAPTION.search(chunk) or type("", (), {"group": lambda s, n: b""})()).group(1)
+        if isinstance(img_cap, bytes):
+            img_cap = img_cap.decode("utf-8", errors="replace")
+        img_url_m = _RX_IMG_LOC.search(chunk)
+        img_url = img_url_m.group(1).decode("utf-8", errors="replace") if img_url_m else ""
 
-        # parse date/time from ISO lastmod: 2026-04-30T22:40:00-04:00
         date = time_ = ""
         if lastmod:
             parts = lastmod.split("T")
             date = parts[0]
             if len(parts) > 1:
-                time_ = parts[1][:5]  # HH:MM
+                time_ = parts[1][:5]
 
-        # issuer from "PRNewsfoto/Acme Corp" in caption
         issuer = ""
         m = _PRNEWSFOTO.search(img_cap)
         if m:
             issuer = m.group(1).strip()
 
         rows.append({
-            "date":      date,
-            "time":      time_,
-            "datetime":  lastmod,
-            "issuer":    issuer,
-            "image_url": img_url,
-            "url":       loc,
+            "date": date, "time": time_, "datetime": lastmod,
+            "issuer": issuer, "image_url": img_url, "url": loc,
         })
+    return rows
+
+
+def _decompress(data: bytes) -> bytes:
+    """Decompress gz bytes, tolerating truncated streams."""
+    try:
+        return gzip.decompress(data)
+    except EOFError:
+        # truncated gz — decompress what we have via zlib (wbits=47 = gzip format)
+        import zlib
+        d = zlib.decompressobj(wbits=47)
+        try:
+            return d.decompress(data)
+        except zlib.error:
+            return d.flush()
+
+
+def _xml_to_rows(root) -> list[dict]:
+    rows = []
+    for url_el in root.findall("sm:url", NS):
+        loc     = url_el.findtext("sm:loc",                    namespaces=NS) or ""
+        lastmod = url_el.findtext("sm:lastmod",                namespaces=NS) or ""
+        img_cap = url_el.findtext("image:image/image:caption", namespaces=NS) or ""
+        img_url = url_el.findtext("image:image/image:loc",     namespaces=NS) or ""
+
+        if not loc:
+            continue
+
+        date = time_ = ""
+        if lastmod:
+            parts = lastmod.split("T")
+            date = parts[0]
+            if len(parts) > 1:
+                time_ = parts[1][:5]
+
+        issuer = ""
+        m = _PRNEWSFOTO.search(img_cap)
+        if m:
+            issuer = m.group(1).strip()
+
+        rows.append({
+            "date": date, "time": time_, "datetime": lastmod,
+            "issuer": issuer, "image_url": img_url, "url": loc,
+        })
+    return rows
+
+
+def parse_gz(gz_url: str) -> list[dict]:
+    """Download, decompress, and parse one gz sitemap. Returns list of row dicts."""
+    req = urllib.request.Request(gz_url, headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        raw = _decompress(resp.read())
+
+    root = _parse_xml(raw)
+    rows = _xml_to_rows(root)
+
+    # if XML parsing recovered far fewer entries than are in the raw bytes, fall
+    # back to regex extraction which skips corrupt blocks individually
+    loc_count = raw.count(b"<loc>")
+    if loc_count > 0 and len(rows) < loc_count * 0.5:
+        rows = _regex_extract(raw)
+
     return rows
 
 
