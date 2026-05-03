@@ -16,6 +16,7 @@ import argparse
 import csv
 import os
 import re
+import signal
 import time
 import random
 from datetime import date, datetime, timedelta
@@ -242,6 +243,7 @@ def date_range(start: date, end: date):
 
 
 def main():
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--from", dest="from_date")
