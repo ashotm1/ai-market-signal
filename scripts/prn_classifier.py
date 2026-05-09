@@ -6,9 +6,16 @@ Pipeline (cheapest first):
   title  → company name guess (text before first PR action verb)
   name   → (ticker, exchange) via ticker_details.csv lookup
   ticker → catalyst tags (only if listed on NYSE/NASDAQ; else 'unlisted')
+
+Usage:
+  python scripts/prn_classifier.py
+  python scripts/prn_classifier.py --input-dir data/prn --output data/prn_classified.csv
 """
+import argparse
 import bisect
 import csv
+import glob
+import os
 import re
 import urllib.parse
 
@@ -124,3 +131,63 @@ def classify_row(
         "exchange": exchange,
         "catalyst": catalyst,
     }
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input-dir", default="data/prn")
+    parser.add_argument("--output", default="data/prn_classified.csv")
+    parser.add_argument("--ticker-details", default="data/ticker_universe.csv")
+    args = parser.parse_args()
+
+    input_files = sorted(glob.glob(os.path.join(args.input_dir, "prn_*.csv")))
+    if not input_files:
+        print(f"No prn_*.csv files found in {args.input_dir}")
+        raise SystemExit(1)
+
+    # Append-safe: skip URLs already classified
+    done_urls: set[str] = set()
+    if os.path.exists(args.output):
+        with open(args.output, encoding="utf-8") as f:
+            done_urls = {row["url"] for row in csv.DictReader(f)}
+        print(f"Resuming — {len(done_urls)} URLs already classified")
+
+    print(f"Building ticker index from {args.ticker_details}...")
+    index, sorted_keys = build_ticker_index(args.ticker_details)
+    print(f"  {len(index)} tickers loaded")
+
+    write_header = not os.path.exists(args.output)
+    total_written = 0
+
+    with open(args.output, "a", newline="", encoding="utf-8") as f_out:
+        writer = None
+
+        for path in input_files:
+            with open(path, encoding="utf-8") as f_in:
+                reader = csv.DictReader(f_in)
+                batch_written = 0
+                for row in reader:
+                    url = row.get("url", "")
+                    if not url or url in done_urls:
+                        continue
+                    result = classify_row(url, index, sorted_keys)
+                    out_row = {
+                        "datetime": row.get("datetime", ""),
+                        "issuer": row.get("issuer", ""),
+                        "url": url,
+                        "company": result["company"],
+                        "ticker": result["ticker"],
+                        "catalyst": result["catalyst"],
+                    }
+                    if writer is None:
+                        writer = csv.DictWriter(f_out, fieldnames=list(out_row.keys()))
+                    if write_header:
+                        writer.writeheader()
+                        write_header = False
+                    writer.writerow(out_row)
+                    done_urls.add(url)
+                    batch_written += 1
+                total_written += batch_written
+            print(f"  {os.path.basename(path)}: {batch_written} rows")
+
+    print(f"\nDone. {total_written} rows written to {args.output}")

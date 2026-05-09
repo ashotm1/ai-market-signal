@@ -519,6 +519,47 @@ async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = Fa
         print(f"  {n:>6} rows → {path}")
 
 
+TICKER_UNIVERSE_CSV = "data/ticker_universe.csv"
+_UNIVERSE_EXCHANGES = ["XNAS", "XNYS", "XASE"]
+_UNIVERSE_FIELDS = ["ticker", "name", "primary_exchange", "type", "active", "list_date", "delisted_utc", "cik"]
+
+
+async def fetch_ticker_universe():
+    """Pull all CS tickers (active + delisted) from Polygon for XNAS/XNYS/XASE."""
+    if not MASSIVE_API_KEY:
+        raise RuntimeError("Missing API key. Set MASSIVE_API_KEY or POLYGON_API_KEY.")
+
+    all_rows: list[dict] = []
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        for exchange in _UNIVERSE_EXCHANGES:
+            for active in ("true", "false"):
+                label = f"{exchange} active={active}"
+                url = (
+                    f"{POLYGON_BASE}/v3/reference/tickers"
+                    f"?market=stocks&type=CS&exchange={exchange}&active={active}"
+                    f"&limit=1000&apiKey={MASSIVE_API_KEY}"
+                )
+                page = 0
+                while url:
+                    r = await client.get(url, timeout=30)
+                    if r.status_code != 200:
+                        print(f"  {label} — HTTP {r.status_code}, stopping", flush=True)
+                        break
+                    data = r.json()
+                    results = data.get("results", [])
+                    for row in results:
+                        all_rows.append({f: row.get(f) for f in _UNIVERSE_FIELDS})
+                    page += 1
+                    next_url = data.get("next_url")
+                    url = f"{next_url}&apiKey={MASSIVE_API_KEY}" if next_url else None
+                print(f"  {label}: {page} pages", flush=True)
+
+    df = pd.DataFrame(all_rows).drop_duplicates(subset=["ticker"])
+    df.to_csv(TICKER_UNIVERSE_CSV, index=False)
+    print(f"\nDone. {len(df)} unique tickers → {TICKER_UNIVERSE_CSV}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", choices=["edgar", "stocktitan", "all"], default="edgar",
@@ -531,10 +572,14 @@ def main():
                         help="re-fetch rows with partial price data (price_t0 set but some changes null)")
     parser.add_argument("--rewrite-all", action="store_true",
                         help="re-process all rows for both sources, writing to *_draft.csv files (ignores dedup)")
+    parser.add_argument("--ticker-universe", action="store_true",
+                        help="fetch all active + delisted CS tickers for XNAS/XNYS/XASE -> data/ticker_universe.csv")
     args = parser.parse_args()
 
     async def _main():
-        if args.rewrite_all:
+        if args.ticker_universe:
+            await fetch_ticker_universe()
+        elif args.rewrite_all:
             cleared: set = set()
             await run(source="edgar",      catalyst=args.catalyst, sig=args.sig, rewrite=True, _shared_cleared=cleared)
             await run(source="stocktitan", catalyst=args.catalyst, sig=args.sig, rewrite=True, _shared_cleared=cleared)
