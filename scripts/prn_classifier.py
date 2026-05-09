@@ -7,6 +7,7 @@ Pipeline (cheapest first):
   title  → company name guess (text before first PR action verb)
   name   → (ticker, exchange) via ticker_details.csv lookup
 """
+import bisect
 import csv
 import re
 import urllib.parse
@@ -62,8 +63,11 @@ def _normalize(name: str) -> str:
     return " ".join(name.split())
 
 
-def build_ticker_index(ticker_details_path: str) -> dict[str, tuple[str, str]]:
-    """Read ticker_details.csv → {normalized_name: (ticker, exchange)}.
+def build_ticker_index(ticker_details_path: str) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Read ticker_details.csv → (index, sorted_keys).
+
+    index       — {normalized_name: (ticker, exchange)}
+    sorted_keys — sorted list of index keys for O(log N) prefix lookup
 
     On duplicate names the first row wins (CSV is sorted by ticker, so this
     is deterministic; fine-tune later if collisions matter).
@@ -74,11 +78,15 @@ def build_ticker_index(ticker_details_path: str) -> dict[str, tuple[str, str]]:
             key = _normalize(row.get("name", ""))
             if key and key not in index:
                 index[key] = (row["ticker"], row.get("primary_exchange", ""))
-    return index
+    return index, sorted(index)
 
 
-def lookup_ticker(name: str, index: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
-    """Lookup name → (ticker, exchange). Tries exact then prefix match."""
+def lookup_ticker(
+    name: str,
+    index: dict[str, tuple[str, str]],
+    sorted_keys: list[str],
+) -> tuple[str, str] | None:
+    """Lookup name → (ticker, exchange). Tries exact then O(log N) prefix match."""
     if not name:
         return None
     key = _normalize(name)
@@ -87,17 +95,21 @@ def lookup_ticker(name: str, index: dict[str, tuple[str, str]]) -> tuple[str, st
     if key in index:
         return index[key]
     prefix = key + " "
-    for ix_key, val in index.items():
-        if ix_key.startswith(prefix):
-            return val
+    pos = bisect.bisect_left(sorted_keys, prefix)
+    if pos < len(sorted_keys) and sorted_keys[pos].startswith(prefix):
+        return index[sorted_keys[pos]]
     return None
 
 
-def classify_row(url: str, ticker_index: dict[str, tuple[str, str]]) -> dict:
+def classify_row(
+    url: str,
+    index: dict[str, tuple[str, str]],
+    sorted_keys: list[str],
+) -> dict:
     """Full classify pipeline for one PRN URL."""
     title = title_from_url(url)
     name = company_from_title(title) if title else None
-    hit = lookup_ticker(name, ticker_index) if name else None
+    hit = lookup_ticker(name, index, sorted_keys) if name else None
     return {
         "title": title,
         "company": name,
