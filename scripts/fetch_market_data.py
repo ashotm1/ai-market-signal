@@ -47,17 +47,17 @@ POLYGON_BASE = "https://api.polygon.io"
 MAX_CONCURRENT = 20  # tickers in-flight simultaneously (3 calls each → up to 60 open connections)
 
 EDGAR_INPUT_CSV    = "data/ex_99_classified.csv"
-EDGAR_OUTPUT_CSV   = "data/price_data.csv"
+EDGAR_OUTPUT_CSV   = "data/prices/price_data.csv"
 ST_INPUT_CSV       = "data/stocktitan_news_filtered.csv"
-ST_OUTPUT_CSV      = "data/st_price_data.csv"
-OUTPUT_BARS_CSV    = "data/price_bars.csv"        # shared — raw 1-min OHLCV bars
-OUTPUT_DAILY_CSV   = "data/daily_bars.csv"        # shared — raw daily OHLCV bars
-OUTPUT_DETAILS_CSV = "data/ticker_details.csv"    # shared — dedup key lives here
+ST_OUTPUT_CSV      = "data/prices/st_price_data.csv"
+OUTPUT_BARS_CSV    = "data/prices/price_bars.csv"        # shared — raw 1-min OHLCV bars
+OUTPUT_DAILY_CSV   = "data/prices/daily_bars.csv"        # shared — raw daily OHLCV bars
+OUTPUT_DETAILS_CSV = "data/prices/ticker_details.csv"    # shared — dedup key lives here
 
 
-def _rerun_path(p: str) -> str:
+def _draft_path(p: str) -> str:
     base, ext = p.rsplit(".", 1)
-    return f"{base}_rerun.{ext}"
+    return f"{base}_draft.{ext}"
 
 
 _FETCH_ERROR = object()  # sentinel: request failed (distinct from None/"results":null)
@@ -69,10 +69,10 @@ _TARGET_CATALYSTS = {
 }
 
 
-def _is_target(v) -> bool:
+def _is_target(v, catalysts: set) -> bool:
     try:
         tags = ast.literal_eval(v) if isinstance(v, str) else [v]
-        return bool(set(tags) & _TARGET_CATALYSTS)
+        return bool(set(tags) & catalysts)
     except Exception:
         return False
 
@@ -190,6 +190,27 @@ def compute_changes(bars: list, acceptance_dt: str | None, daily: list | None = 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
+def _repair_csv(path: str) -> None:
+    """Truncate a partially written last line left by a mid-write crash."""
+    if not os.path.exists(path):
+        return
+    with open(path, "r+b") as f:
+        f.seek(-1, 2)
+        if f.read(1) == b"\n":
+            return  # file ends cleanly
+        # Walk backward to find the last newline
+        f.seek(0, 2)
+        pos = f.tell() - 1
+        while pos > 0:
+            pos -= 1
+            f.seek(pos)
+            if f.read(1) == b"\n":
+                f.seek(pos + 1)
+                f.truncate()
+                print(f"  repaired partial write in {path}", flush=True)
+                return
+
+
 def _normalize_date(d) -> str:
     """Convert YYYYMMDD (int or str) or MM/DD/YYYY to YYYY-MM-DD."""
     s = str(d).strip()
@@ -211,9 +232,7 @@ def load_edgar(catalyst: str | None) -> pd.DataFrame:
     df = pd.read_csv(EDGAR_INPUT_CSV)
     df = df[df["is_pr"] == True].reset_index(drop=True)
     catalyst_filter = {catalyst} if catalyst else _TARGET_CATALYSTS
-    df = df[df["catalyst"].apply(
-        lambda v: bool(set(ast.literal_eval(v) if isinstance(v, str) else [v]) & catalyst_filter)
-    )].reset_index(drop=True)
+    df = df[df["catalyst"].apply(_is_target, catalysts=catalyst_filter)].reset_index(drop=True)
     return df
 
 
@@ -272,7 +291,7 @@ def _flatten_details(ticker: str, date_str: str, d: dict) -> dict:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = False, refetch: bool = False, rewrite: bool = False):
+async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = False, refetch: bool = False, rewrite: bool = False, _shared_cleared: set | None = None):
     if not MASSIVE_API_KEY:
         raise RuntimeError(
             "Missing API key. Set MASSIVE_API_KEY or POLYGON_API_KEY environment variable."
@@ -283,13 +302,21 @@ async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = Fa
     _daily_csv   = OUTPUT_DAILY_CSV
     _details_csv = OUTPUT_DETAILS_CSV
     if rewrite:
-        _out_csv     = _rerun_path(_out_csv)
-        _bars_csv    = _rerun_path(_bars_csv)
-        _daily_csv   = _rerun_path(_daily_csv)
-        _details_csv = _rerun_path(_details_csv)
-        for p in (_out_csv, _bars_csv, _daily_csv, _details_csv):
+        _out_csv     = _draft_path(_out_csv)
+        _bars_csv    = _draft_path(_bars_csv)
+        _daily_csv   = _draft_path(_daily_csv)
+        _details_csv = _draft_path(_details_csv)
+        if _shared_cleared is None:
+            _shared_cleared = set()
+        # per-source output always cleared; shared files only cleared once across sources
+        for p in (_out_csv,):
             if os.path.exists(p):
                 os.remove(p)
+        for p in (_bars_csv, _daily_csv, _details_csv):
+            if p not in _shared_cleared:
+                if os.path.exists(p):
+                    os.remove(p)
+                _shared_cleared.add(p)
 
     # ── Load input ────────────────────────────────────────────────────────────
     if source == "stocktitan":
@@ -483,6 +510,8 @@ async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = Fa
     except (KeyboardInterrupt, Exception) as exc:
         print(f"\nInterrupted ({exc.__class__.__name__}) — saving progress...", flush=True)
         _flush()
+        for path in total_written:
+            _repair_csv(path)
 
     _flush()
     print(f"\nDone. API calls: {api_calls}")
@@ -501,13 +530,14 @@ def main():
     parser.add_argument("--refetch", action="store_true",
                         help="re-fetch rows with partial price data (price_t0 set but some changes null)")
     parser.add_argument("--rewrite-all", action="store_true",
-                        help="re-process all rows for both sources, writing to *_rerun.csv files (ignores dedup)")
+                        help="re-process all rows for both sources, writing to *_draft.csv files (ignores dedup)")
     args = parser.parse_args()
 
     async def _main():
         if args.rewrite_all:
-            await run(source="edgar",      catalyst=args.catalyst, sig=args.sig, rewrite=True)
-            await run(source="stocktitan", catalyst=args.catalyst, sig=args.sig, rewrite=True)
+            cleared: set = set()
+            await run(source="edgar",      catalyst=args.catalyst, sig=args.sig, rewrite=True, _shared_cleared=cleared)
+            await run(source="stocktitan", catalyst=args.catalyst, sig=args.sig, rewrite=True, _shared_cleared=cleared)
         elif args.source == "all":
             await run(source="edgar",      catalyst=args.catalyst, sig=args.sig, refetch=args.refetch)
             await run(source="stocktitan", catalyst=args.catalyst, sig=args.sig, refetch=args.refetch)
