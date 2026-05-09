@@ -3,9 +3,9 @@ prn_classifier.py — Classify PRN CSV rows: title, company, ticker, exchange, c
 
 Pipeline (cheapest first):
   url    → title (strip slug)
-  title  → catalyst tags (delegated to pr_detection.classify_catalyst)
   title  → company name guess (text before first PR action verb)
   name   → (ticker, exchange) via ticker_details.csv lookup
+  ticker → catalyst tags (only if listed on NYSE/NASDAQ; else 'unlisted')
 """
 import bisect
 import csv
@@ -101,6 +101,9 @@ def lookup_ticker(
     return None
 
 
+_LISTED_EXCHANGES = {"XNAS", "XNYS", "XASE"}  # Polygon MIC codes for NASDAQ, NYSE, NYSE American
+
+
 def classify_row(
     url: str,
     index: dict[str, tuple[str, str]],
@@ -110,10 +113,14 @@ def classify_row(
     title = title_from_url(url)
     name = company_from_title(title) if title else None
     hit = lookup_ticker(name, index, sorted_keys) if name else None
+    ticker = hit[0] if hit else None
+    exchange = hit[1] if hit else None
+    is_listed = exchange in _LISTED_EXCHANGES if exchange else False
+    catalyst = str(classify_catalyst(title)) if (is_listed and title) else str(["unlisted"])
     return {
         "title": title,
         "company": name,
-        "tags": classify_catalyst(title) if title else ["other"],
-        "ticker": hit[0] if hit else None,
-        "exchange": hit[1] if hit else None,
+        "ticker": ticker,
+        "exchange": exchange,
+        "catalyst": catalyst,
     }
