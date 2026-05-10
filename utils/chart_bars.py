@@ -11,8 +11,8 @@ import sys
 import mplfinance as mpf
 import pandas as pd
 
-BARS_CSV  = "data/price_bars.csv"
-PRICE_DATA = "data/price_data.csv"
+BARS_CSV  = "data/prices/price_bars.csv"
+PRICE_DATA = "data/prices/price_data.csv"
 
 
 def main():

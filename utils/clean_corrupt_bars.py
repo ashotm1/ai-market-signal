@@ -7,10 +7,10 @@ ticker_details.csv, and price_data.csv so fetch_market_data.py re-fetches them c
 """
 import pandas as pd
 
-BARS_CSV    = "data/price_bars.csv"
-DAILY_CSV   = "data/daily_bars.csv"
-DETAILS_CSV = "data/ticker_details.csv"
-PRICE_CSV   = "data/price_data.csv"
+BARS_CSV    = "data/prices/price_bars.csv"
+DAILY_CSV   = "data/prices/daily_bars.csv"
+DETAILS_CSV = "data/prices/ticker_details.csv"
+PRICE_CSV   = "data/prices/price_data.csv"
 
 
 def main():

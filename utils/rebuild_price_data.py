@@ -12,9 +12,9 @@ sys.path.insert(0, os.path.join(_root, "scripts"))
 from scripts.fetch_market_data import compute_changes, _OFFSETS_MS
 
 BACKUP_CSV = "data/backup_data.csv"
-BARS_CSV   = "data/price_bars.csv"
-DAILY_CSV  = "data/daily_bars.csv"
-OUTPUT_CSV = "data/price_data.csv"
+BARS_CSV   = "data/prices/price_bars.csv"
+DAILY_CSV  = "data/prices/daily_bars.csv"
+OUTPUT_CSV = "data/prices/price_data.csv"
 
 
 def main():

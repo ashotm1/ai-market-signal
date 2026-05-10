@@ -56,7 +56,7 @@ _DATE_RE = re.compile(
 )
 
 
-DETAILS_CSV = "data/ticker_details.csv"
+DETAILS_CSV = "data/prices/ticker_details.csv"
 
 
 def _load_name_ticker() -> dict:
