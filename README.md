@@ -4,7 +4,7 @@ Event-driven trading signal pipeline for small-cap stocks. Detects catalyst pres
 
 Scope is non-earnings catalysts — M&A, biotech, crypto treasury, collaborations, contracts, product launches, private placements.
 
-Status: data ingest and feature extraction working. ML training stage designed, not yet built.
+Status: Data pipeline and feature extraction working. ML training stage designed, not yet built.
 
 ---
 
@@ -28,9 +28,8 @@ python pipeline.py --date-from 2022-01-01 --date-to 2025-12-31 --llm --market
 
 ---
 
-## Other news sources (raw ingest only)
-
-These collect headlines + URLs and are not yet wired into the classifier / feature / market-data steps.
+## Other news sources 
+These collect headlines + URLs from different press release sites.
 
 - [scraper/stocktitan_scraper.py](scraper/stocktitan_scraper.py) — daily page scrape, ticker + tags + ST-internal scores
 - [scraper/gnw_scraper.py](scraper/gnw_scraper.py) — GlobeNewsWire paginated search, Nasdaq/NYSE only, ticker via preview text or `ticker_details` name lookup
