@@ -15,6 +15,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TARGET_DIRS = ["scripts", "api", "scraper", "utils", "ai_sentiment", "ml", "finbert_service"]
 
+# Runtime-only deps (not imported in code, but required to run something).
+EXTRA_PACKAGES = ["uvicorn"]
+
 # Local top-level modules — anything importable from repo root that isn't a dep.
 LOCAL_MODULES = {p.stem for p in REPO_ROOT.glob("*.py")} | {
     d.name for d in REPO_ROOT.iterdir() if d.is_dir() and (d / "__init__.py").exists()
@@ -52,6 +55,13 @@ def main():
 
     pkgs: dict[str, str] = {}
     unresolved: list[str] = []
+
+    for extra in EXTRA_PACKAGES:
+        try:
+            pkgs[extra.lower()] = f"{extra}=={version(extra)}"
+        except PackageNotFoundError:
+            unresolved.append(extra)
+
     for mod in sorted(imports):
         if mod in stdlib or mod in LOCAL_MODULES or mod.startswith("_"):
             continue
