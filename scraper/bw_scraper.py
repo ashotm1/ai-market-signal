@@ -330,6 +330,22 @@ def main():
                 """)
                 # Wait until article anchors appear (signals listing rendered).
                 page.wait_for_selector('a[href*="/news/home/"]', timeout=10000)
+                # Anchors are SSR'd but date spans hydrate client-side a beat later.
+                # Poll until every card has its date span (or until timeout — then we
+                # take whatever's hydrated, since some cards may legitimately lack one).
+                try:
+                    page.wait_for_function(
+                        """() => {
+                            const anchors = document.querySelectorAll('a[href*="/news/home/"]');
+                            const re = / at \\d{1,2}:\\d{2}\\s*(AM|PM)\\s*ET/i;
+                            const dated = [...document.querySelectorAll('span')]
+                                .filter(s => re.test(s.textContent)).length;
+                            return anchors.length > 0 && dated >= anchors.length;
+                        }""",
+                        timeout=8000,
+                    )
+                except Exception:
+                    pass  # fall through; parse_page will record blanks for un-hydrated cards
                 simulate_human(page)
                 nav_fail_streak = 0
             except Exception as e:
