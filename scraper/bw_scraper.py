@@ -323,14 +323,13 @@ def main():
             print(f"  page {page_n}: nav...", end=" ", flush=True)
             try:
                 page.goto(url, wait_until="commit", timeout=15000)
-                # Spoof visibility so page JS thinks the tab is focused, even when
-                # the Chrome window loses focus. Fixes mid-render glitches on
-                # transition + gives Akamai a "user is engaged" signal.
+                # Spoof visibility so page JS keeps rendering when window loses focus.
                 page.evaluate("""
                     Object.defineProperty(document, 'hidden',          {configurable: true, get: () => false});
                     Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'visible'});
                 """)
-                page.wait_for_timeout(1500)
+                # Wait until article anchors appear (signals listing rendered).
+                page.wait_for_selector('a[href*="/news/home/"]', timeout=10000)
                 simulate_human(page)
                 nav_fail_streak = 0
             except Exception as e:
@@ -396,8 +395,8 @@ def main():
             else:
                 dup_streak = 0
 
-            # Log-normal delay: mean ~5s, median 4s, 95th ~11s, rare >20s.
-            time.sleep(max(2.0, min(30.0, random.lognormvariate(math.log(4), 0.6))))
+            # Log-normal delay: mean ~2s, median 1.7s, 95th ~4.5s, rare >8s.
+            time.sleep(max(1.0, min(15.0, random.lognormvariate(math.log(2) - 0.18, 0.6))))
 
             # Long break: triggers once session_max elapsed (30-120min, left-skewed)
             if time.time() - session_start >= session_max:
