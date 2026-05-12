@@ -41,8 +41,9 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
-OUTPUT_CSV = "data/bw_news.csv"
-BASE_URL   = "https://www.businesswire.com"
+OUTPUT_CSV    = "data/bw_news.csv"
+MAX_PAGE_FILE = "data/bw_max_page.txt"
+BASE_URL      = "https://www.businesswire.com"
 
 CSV_FIELDS = ["datetime", "ticker", "exchange", "title", "url"]
 
@@ -201,6 +202,21 @@ def load_existing_rows() -> dict:
     return rows
 
 
+def load_max_page() -> int:
+    if not os.path.exists(MAX_PAGE_FILE):
+        return 0
+    try:
+        with open(MAX_PAGE_FILE, encoding="utf-8") as f:
+            return int(f.read().strip() or 0)
+    except (ValueError, OSError):
+        return 0
+
+
+def save_max_page(n: int):
+    with open(MAX_PAGE_FILE, "w", encoding="utf-8") as f:
+        f.write(str(n))
+
+
 def write_all(rows: dict):
     """Atomic full rewrite via tmp + rename."""
     tmp = OUTPUT_CSV + ".tmp"
@@ -220,8 +236,8 @@ def main():
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug-port", type=int, default=9222)
-    parser.add_argument("--from-page",  type=int, default=1,
-                        help="start page (default 1; pagination shifts daily so resume is by date, not page)")
+    parser.add_argument("--from-page",  type=int, default=None,
+                        help="start page (default: max_page+1 from bw_max_page.txt, or 1 if none)")
     parser.add_argument("--to-page",    type=int, default=None,
                         help="end page (inclusive). If omitted, scrape until dup-stop or until-date triggers.")
     parser.add_argument("--until-date", type=str, default=None,
@@ -278,13 +294,14 @@ def main():
             return
 
         existing_rows = load_existing_rows()
-        start_page = args.from_page
+        max_page = load_max_page()
+        start_page = args.from_page if args.from_page is not None else (max_page + 1 if max_page else 1)
         end_page = args.to_page if args.to_page is not None else start_page + 100000
         existing_dts = [r.get("datetime", "") for r in existing_rows.values() if r.get("datetime")]
         newest = max(existing_dts) if existing_dts else "(none)"
         oldest = min(existing_dts) if existing_dts else "(none)"
         print(f"Existing: {len(existing_rows)} URLs in {OUTPUT_CSV}")
-        print(f"  newest: {newest}   oldest: {oldest}")
+        print(f"  newest: {newest}   oldest: {oldest}   max page seen: {max_page or '(none)'}")
         print(f"Pages {start_page}..{end_page}", end="")
         if args.until_date:
             print(f"   until_date={args.until_date}", end="")
@@ -305,7 +322,14 @@ def main():
             url = f"{BASE_URL}/newsroom?language=en&page={page_n}"
             print(f"  page {page_n}: nav...", end=" ", flush=True)
             try:
-                page.goto(url, wait_until="commit", timeout=5000)
+                page.goto(url, wait_until="commit", timeout=15000)
+                # Spoof visibility so page JS thinks the tab is focused, even when
+                # the Chrome window loses focus. Fixes mid-render glitches on
+                # transition + gives Akamai a "user is engaged" signal.
+                page.evaluate("""
+                    Object.defineProperty(document, 'hidden',          {configurable: true, get: () => false});
+                    Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'visible'});
+                """)
                 page.wait_for_timeout(1500)
                 simulate_human(page)
                 nav_fail_streak = 0
@@ -349,6 +373,9 @@ def main():
                 write_all(existing_rows)
 
             total_new += new_count
+            if new_count and page_n > max_page:
+                save_max_page(page_n)
+                max_page = page_n
             print(f"items={len(items)}  new={new_count}  updated={updated_count}  total_new={total_new}")
 
             if args.until_date and items:
