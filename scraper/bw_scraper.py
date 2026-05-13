@@ -43,6 +43,7 @@ from playwright.sync_api import sync_playwright
 
 OUTPUT_CSV    = "data/bw_news.csv"
 RUNS_CSV      = "data/bw_runs.csv"
+LOG_DIR       = "logs"
 BASE_URL      = "https://www.businesswire.com"
 
 CSV_FIELDS  = ["datetime", "ticker", "exchange", "title", "url"]
@@ -240,9 +241,27 @@ def write_runs(runs: list):
 
 
 
+class _Tee:
+    """Writes to multiple streams. Lets every existing `print` also hit a log file."""
+    def __init__(self, *streams):
+        self._streams = streams
+    def write(self, s):
+        for st in self._streams:
+            st.write(s)
+    def flush(self):
+        for st in self._streams:
+            st.flush()
+
+
 def main():
     import sys
     sys.stdout.reconfigure(line_buffering=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_path = os.path.join(LOG_DIR, f"bw_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+    print(f"[log] {log_path}", flush=True)
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug-port", type=int, default=9222)
@@ -345,6 +364,7 @@ def main():
 
         for page_n in range(start_page, end_page + 1):
             url = f"{BASE_URL}/newsroom?language=en&page={page_n}"
+            cycle_start = time.time()
             print(f"  page {page_n}: nav...", end=" ", flush=True)
             try:
                 page.goto(url, wait_until="commit", timeout=15000)
@@ -440,8 +460,11 @@ def main():
             else:
                 dup_streak = 0
 
-            # Log-normal delay: mean ~2s, median 1.7s, 95th ~4.5s, rare >8s.
-            time.sleep(max(1.0, min(15.0, random.lognormvariate(math.log(2) - 0.18, 0.6))))
+            # Cycle-target sleep: target whole-iteration time ~3s (log-normal),
+            # subtract elapsed nav+hydration+sim+parse+write so the inter-request
+            # cadence the server sees is what's randomized, not the leftover pad.
+            target = min(15.0, random.lognormvariate(math.log(3) - 0.18, 0.6))
+            time.sleep(max(0.0, target - (time.time() - cycle_start)))
 
             # Long break: triggers once session_max elapsed (30-120min, left-skewed)
             if time.time() - session_start >= session_max:
