@@ -42,10 +42,11 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 
 OUTPUT_CSV    = "data/bw_news.csv"
-MAX_PAGE_FILE = "data/bw_max_page.txt"
+RUNS_CSV      = "data/bw_runs.csv"
 BASE_URL      = "https://www.businesswire.com"
 
-CSV_FIELDS = ["datetime", "ticker", "exchange", "title", "url"]
+CSV_FIELDS  = ["datetime", "ticker", "exchange", "title", "url"]
+RUNS_FIELDS = ["started_at", "from_page", "to_page", "total_pages", "duration"]
 
 # from gnw_scraper.py — same exchange-ticker pattern
 _TICKER_RE = re.compile(
@@ -202,21 +203,6 @@ def load_existing_rows() -> dict:
     return rows
 
 
-def load_max_page() -> int:
-    if not os.path.exists(MAX_PAGE_FILE):
-        return 0
-    try:
-        with open(MAX_PAGE_FILE, encoding="utf-8") as f:
-            return int(f.read().strip() or 0)
-    except (ValueError, OSError):
-        return 0
-
-
-def save_max_page(n: int):
-    with open(MAX_PAGE_FILE, "w", encoding="utf-8") as f:
-        f.write(str(n))
-
-
 def write_all(rows: dict):
     """Atomic full rewrite via tmp + rename."""
     tmp = OUTPUT_CSV + ".tmp"
@@ -226,6 +212,30 @@ def write_all(rows: dict):
         for row in rows.values():
             writer.writerow({k: row.get(k, "") for k in CSV_FIELDS})
     os.replace(tmp, OUTPUT_CSV)
+
+
+def fmt_duration(seconds: float) -> str:
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d}"
+
+
+def load_runs() -> list:
+    if not os.path.exists(RUNS_CSV):
+        return []
+    with open(RUNS_CSV, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def write_runs(runs: list):
+    tmp = RUNS_CSV + ".tmp"
+    with open(tmp, "w", newline="\n", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=RUNS_FIELDS)
+        w.writeheader()
+        for r in runs:
+            w.writerow({k: r.get(k, "") for k in RUNS_FIELDS})
+    os.replace(tmp, RUNS_CSV)
 
 
 
@@ -294,7 +304,9 @@ def main():
             return
 
         existing_rows = load_existing_rows()
-        max_page = load_max_page()
+        prior_runs = load_runs()
+        prior_to_pages = [int(r["to_page"]) for r in prior_runs if r.get("to_page", "").isdigit()]
+        max_page = max(prior_to_pages) if prior_to_pages else 0
         start_page = args.from_page if args.from_page is not None else (max_page + 1 if max_page else 1)
         end_page = args.to_page if args.to_page is not None else start_page + 100000
         existing_dts = [r.get("datetime", "") for r in existing_rows.values() if r.get("datetime")]
@@ -310,6 +322,7 @@ def main():
         total_new = 0
         dup_streak = 0
         nav_fail_streak = 0
+        pages_scraped = 0
 
         # Session pacing: scrape for 30-120min (left-skewed toward 2h), then break 5-10min
         def _new_session_max():
@@ -317,6 +330,18 @@ def main():
         session_start = time.time()
         session_max = _new_session_max()
         print(f"  session window: {session_max/60:.0f}min before break\n")
+
+        run_start = time.time()
+        runs = prior_runs
+        current_run = {
+            "started_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "from_page":   str(start_page),
+            "to_page":     "",
+            "total_pages": "0",
+            "duration":    "00:00:00",
+        }
+        runs.append(current_run)
+        write_runs(runs)
 
         for page_n in range(start_page, end_page + 1):
             url = f"{BASE_URL}/newsroom?language=en&page={page_n}"
@@ -345,7 +370,8 @@ def main():
                         timeout=8000,
                     )
                 except Exception:
-                    pass  # fall through; parse_page will record blanks for un-hydrated cards
+                    # fall through; parse_page will record blanks for un-hydrated cards
+                    print("hydrate-timeout", end=" ", flush=True)
                 simulate_human(page)
                 nav_fail_streak = 0
             except Exception as e:
@@ -388,10 +414,13 @@ def main():
                 write_all(existing_rows)
 
             total_new += new_count
-            if new_count and page_n > max_page:
-                save_max_page(page_n)
-                max_page = page_n
             print(f"items={len(items)}  new={new_count}  updated={updated_count}  total_new={total_new}")
+
+            pages_scraped += 1
+            current_run["to_page"]     = str(page_n)
+            current_run["total_pages"] = str(pages_scraped)
+            current_run["duration"]    = fmt_duration(time.time() - run_start)
+            write_runs(runs)
 
             if args.until_date and items:
                 page_dts = [it["datetime"] for it in items if it.get("datetime")]
@@ -423,7 +452,10 @@ def main():
                 session_max = _new_session_max()
                 print(f"  [resume] next session window: {session_max/60:.0f}min\n")
 
+        current_run["duration"] = fmt_duration(time.time() - run_start)
+        write_runs(runs)
         print(f"\nDone. {total_new} new articles -> {OUTPUT_CSV}")
+        print(f"Ran {pages_scraped} pages ({current_run['from_page']} -> {current_run['to_page'] or 'none'}) in {current_run['duration']}")
 
 
 if __name__ == "__main__":
