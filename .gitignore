@@ -53,8 +53,3 @@ experimental/
 # Notes
 notes/
 /data
-
-# DVC
-/.dvc/
-/data.dvc
-/.dvcignore

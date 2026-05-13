@@ -448,6 +448,8 @@ def main():
                 break_secs = random.uniform(5, 10) * 60
                 print(f"\n  [break] sleeping {break_secs/60:.1f}min — session was {(time.time()-session_start)/60:.1f}min\n")
                 time.sleep(break_secs)
+                # Shift run_start forward so duration excludes the break
+                run_start += break_secs
                 session_start = time.time()
                 session_max = _new_session_max()
                 print(f"  [resume] next session window: {session_max/60:.0f}min\n")
