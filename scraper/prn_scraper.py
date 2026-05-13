@@ -22,8 +22,8 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-OUTPUT_DIR  = "data/prn"
-DONE_FILE   = "data/prn/gz_done.txt"
+OUTPUT_DIR  = "data/prn_data"
+DONE_FILE   = "data/prn_data/gz_done.txt"
 GZ_INDEX    = "https://www.prnewswire.com/sitemap-gz.xml"
 DELAY       = 2
 

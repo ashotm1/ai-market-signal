@@ -9,7 +9,7 @@ Pipeline (cheapest first):
 
 Usage:
   python scripts/prn_classifier.py
-  python scripts/prn_classifier.py --input-dir data/prn --output data/prn_classified.csv
+  python scripts/prn_classifier.py --input-dir data/prn_data --output data/prn_classified.csv
 """
 import argparse
 import bisect
@@ -135,7 +135,7 @@ def classify_row(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", default="data/prn")
+    parser.add_argument("--input-dir", default="data/prn_data")
     parser.add_argument("--output", default="data/prn_classified.csv")
     parser.add_argument("--ticker-details", default="data/ticker_universe.csv")
     args = parser.parse_args()

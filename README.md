@@ -33,7 +33,7 @@ These collect headlines + URLs from different press release sites.
 
 - [scraper/stocktitan_scraper.py](scraper/stocktitan_scraper.py) — daily page scrape, ticker + tags + ST-internal scores
 - [scraper/gnw_scraper.py](scraper/gnw_scraper.py) — GlobeNewsWire paginated search, Nasdaq/NYSE only, ticker via preview text or `ticker_details` name lookup
-- [scraper/prn_scraper.py](scraper/prn_scraper.py) — PRNewswire monthly gz sitemaps, all article urls since 2010 → `data/prn/prn_YYYY-MM.csv`
+- [scraper/prn_scraper.py](scraper/prn_scraper.py) — PRNewswire monthly gz sitemaps, all article urls since 2010 → `data/prn_data/prn_YYYY-MM.csv`
 
 ---
 
