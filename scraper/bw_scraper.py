@@ -241,6 +241,35 @@ def write_runs(runs: list):
 
 
 
+def navigate(page, url: str) -> bool:
+    """One nav attempt: goto + spoof visibility + wait for anchors + wait for date
+    hydration. Returns True on success, False on any error. Prints inline status."""
+    try:
+        page.goto(url, wait_until="commit", timeout=15000)
+        page.evaluate("""
+            Object.defineProperty(document, 'hidden',          {configurable: true, get: () => false});
+            Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'visible'});
+        """)
+        page.wait_for_selector('a[href*="/news/home/"]', timeout=10000)
+        try:
+            page.wait_for_function(
+                """() => {
+                    const anchors = document.querySelectorAll('a[href*="/news/home/"]');
+                    const re = / at \\d{1,2}:\\d{2}\\s*(AM|PM)\\s*ET/i;
+                    const dated = [...document.querySelectorAll('span')]
+                        .filter(s => re.test(s.textContent)).length;
+                    return anchors.length > 0 && dated >= anchors.length;
+                }""",
+                timeout=8000,
+            )
+        except Exception:
+            print("hydrate-timeout", end=" ", flush=True)
+        return True
+    except Exception as e:
+        print(f"nav-fail ({e.__class__.__name__})", end=" ", flush=True)
+        return False
+
+
 class _Tee:
     """Writes to multiple streams. Lets every existing `print` also hit a log file."""
     def __init__(self, *streams):
@@ -362,45 +391,31 @@ def main():
         runs.append(current_run)
         write_runs(runs)
 
+        # Backoff (seconds) before each retry. First try has no backoff.
+        # Schedule: try, retry-now, 30s, 1min, 5min, then give up.
+        retry_waits = (0, 30, 60, 300)
+
         for page_n in range(start_page, end_page + 1):
             url = f"{BASE_URL}/newsroom?language=en&page={page_n}"
             cycle_start = time.time()
             print(f"  page {page_n}: nav...", end=" ", flush=True)
-            try:
-                page.goto(url, wait_until="commit", timeout=15000)
-                # Spoof visibility so page JS keeps rendering when window loses focus.
-                page.evaluate("""
-                    Object.defineProperty(document, 'hidden',          {configurable: true, get: () => false});
-                    Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'visible'});
-                """)
-                # Wait until article anchors appear (signals listing rendered).
-                page.wait_for_selector('a[href*="/news/home/"]', timeout=10000)
-                # Anchors are SSR'd but date spans hydrate client-side a beat later.
-                # Poll until every card has its date span (or until timeout — then we
-                # take whatever's hydrated, since some cards may legitimately lack one).
-                try:
-                    page.wait_for_function(
-                        """() => {
-                            const anchors = document.querySelectorAll('a[href*="/news/home/"]');
-                            const re = / at \\d{1,2}:\\d{2}\\s*(AM|PM)\\s*ET/i;
-                            const dated = [...document.querySelectorAll('span')]
-                                .filter(s => re.test(s.textContent)).length;
-                            return anchors.length > 0 && dated >= anchors.length;
-                        }""",
-                        timeout=8000,
-                    )
-                except Exception:
-                    # fall through; parse_page will record blanks for un-hydrated cards
-                    print("hydrate-timeout", end=" ", flush=True)
-                simulate_human(page)
-                nav_fail_streak = 0
-            except Exception as e:
-                print(f"NAV ERROR — {e}")
-                nav_fail_streak += 1
-                if nav_fail_streak >= 3:
-                    print("\n3 consecutive nav failures — tab may have closed, exiting")
+
+            nav_ok = navigate(page, url)
+            for wait in retry_waits:
+                if nav_ok:
                     break
-                continue
+                if wait:
+                    print(f"wait {wait}s, retry...", end=" ", flush=True)
+                    time.sleep(wait)
+                else:
+                    print("retry now...", end=" ", flush=True)
+                nav_ok = navigate(page, url)
+
+            if not nav_ok:
+                print("\nnav retries exhausted — stopping")
+                break
+            simulate_human(page)
+            nav_fail_streak = 0
 
             html = page.content()
             if len(html) < 5000:
@@ -434,7 +449,7 @@ def main():
                 write_all(existing_rows)
 
             total_new += new_count
-            print(f"items={len(items)}  new={new_count}  updated={updated_count}  total_new={total_new}")
+            print(f"new={new_count}  updated={updated_count}  total_new={total_new}")
 
             pages_scraped += 1
             current_run["to_page"]     = str(page_n)
