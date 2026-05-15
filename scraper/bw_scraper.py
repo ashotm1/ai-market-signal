@@ -475,10 +475,10 @@ def main():
             else:
                 dup_streak = 0
 
-            # Cycle-target sleep: target whole-iteration time ~3s (log-normal),
+            # Cycle-target sleep: target whole-iteration time ~2s (log-normal),
             # subtract elapsed nav+hydration+sim+parse+write so the inter-request
             # cadence the server sees is what's randomized, not the leftover pad.
-            target = min(15.0, random.lognormvariate(math.log(3) - 0.18, 0.6))
+            target = min(15.0, random.lognormvariate(math.log(2) - 0.18, 0.6))
             time.sleep(max(0.0, target - (time.time() - cycle_start)))
 
             # Long break: triggers once session_max elapsed (30-120min, left-skewed)
