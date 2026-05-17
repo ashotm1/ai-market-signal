@@ -50,11 +50,16 @@ from playwright.async_api import async_playwright
 
 OUTPUT_CSV    = "data/bw_news.csv"
 RUNS_CSV      = "data/bw_runs.csv"
+RANGES_CSV    = "data/bw_worker_ranges.csv"
 LOG_DIR       = "logs"
 BASE_URL      = "https://www.businesswire.com"
 
-CSV_FIELDS  = ["datetime", "ticker", "exchange", "title", "url"]
-RUNS_FIELDS = ["started_at", "from_page", "to_page", "total_pages", "duration"]
+CSV_FIELDS    = ["datetime", "ticker", "exchange", "title", "url"]
+RUNS_FIELDS   = ["started_at", "from_page", "to_page", "total_pages", "duration"]
+RANGES_FIELDS = ["wid", "start_page", "end_page"]
+
+CHUNK_SIZE          = 10000  # default gap between worker starts at first-run init
+SHIFT_DUP_THRESHOLD = 3      # consecutive dups that mark the end of phase-1 shift discovery
 
 # from gnw_scraper.py — same exchange-ticker pattern
 _TICKER_RE = re.compile(
@@ -150,6 +155,34 @@ def parse_page(html: str) -> list:
 # CSV I/O
 # ---------------------------------------------------------------------------
 
+def _atomic_replace(tmp: str, dst: str, attempts: int = 2, base_delay: float = 0.05) -> bool:
+    """os.replace(tmp, dst) with one retry on Windows PermissionError.
+
+    Windows fails MoveFileEx with WinError 5 when `dst` is held open by
+    another process (VS Code / Excel viewing the CSV). One brief retry
+    catches transient file-watcher locks; longer retries are pointless
+    (persistent locks won't release) and would block the asyncio loop.
+    On final failure, log + drop the .tmp and return False so the caller
+    can continue. The next save attempt will pick up the latest state.
+    """
+    delay = base_delay
+    for i in range(attempts):
+        try:
+            os.replace(tmp, dst)
+            return True
+        except PermissionError:
+            if i == attempts - 1:
+                print(f"  [warn] could not replace {dst} after {attempts} attempts "
+                      f"(file held open by another process?) — skipping save", flush=True)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                return False
+            time.sleep(delay)
+            delay *= 2
+
+
 def load_existing_rows() -> dict:
     """url → row dict from existing CSV."""
     rows: dict = {}
@@ -162,14 +195,27 @@ def load_existing_rows() -> dict:
 
 
 def write_all(rows: dict):
-    """Atomic full rewrite via tmp + rename."""
+    """Atomic full rewrite via tmp + rename. Use only when existing rows were
+    updated in place — otherwise prefer append_new()."""
     tmp = OUTPUT_CSV + ".tmp"
     with open(tmp, "w", newline="\n", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         w.writeheader()
         for row in rows.values():
             w.writerow({k: row.get(k, "") for k in CSV_FIELDS})
-    os.replace(tmp, OUTPUT_CSV)
+    _atomic_replace(tmp, OUTPUT_CSV)
+
+
+def append_new(rows: list):
+    """Append rows to OUTPUT_CSV. Writes header if file is empty or missing.
+    O(len(rows)) instead of O(total_rows) — used on the new-only path."""
+    needs_header = not (os.path.exists(OUTPUT_CSV) and os.path.getsize(OUTPUT_CSV) > 0)
+    with open(OUTPUT_CSV, "a", newline="\n", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if needs_header:
+            w.writeheader()
+        for row in rows:
+            w.writerow({k: row.get(k, "") for k in CSV_FIELDS})
 
 
 def load_runs() -> list:
@@ -186,7 +232,54 @@ def write_runs(runs: list):
         w.writeheader()
         for r in runs:
             w.writerow({k: r.get(k, "") for k in RUNS_FIELDS})
-    os.replace(tmp, RUNS_CSV)
+    _atomic_replace(tmp, RUNS_CSV)
+
+
+def load_worker_ranges() -> list:
+    """Return [(start, end), ...] in wid order. [] if file missing."""
+    if not os.path.exists(RANGES_CSV):
+        return []
+    rows = []
+    with open(RANGES_CSV, newline="", encoding="utf-8") as f:
+        for r in csv.DictReader(f):
+            rows.append((int(r["wid"]), int(r["start_page"]), int(r["end_page"])))
+    rows.sort()
+    return [(s, e) for _, s, e in rows]
+
+
+def save_worker_ranges(ranges: list):
+    """Atomic rewrite. ranges is [(start, end), ...] ordered by wid."""
+    os.makedirs(os.path.dirname(RANGES_CSV) or ".", exist_ok=True)
+    tmp = RANGES_CSV + ".tmp"
+    with open(tmp, "w", newline="\n", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=RANGES_FIELDS)
+        w.writeheader()
+        for wid, (s, e) in enumerate(ranges):
+            w.writerow({"wid": wid, "start_page": s, "end_page": e})
+    _atomic_replace(tmp, RANGES_CSV)
+
+
+def compute_worker_ranges(existing: list, parallelism: int, first_run_start: int) -> list:
+    """Return per-worker (start, end) of length `parallelism`.
+
+    First-run init (no existing):
+        Wi = (first_run_start + i*CHUNK_SIZE, same)   # end==start marks "fresh"
+
+    Extension (existing has fewer entries than parallelism):
+        Each new wid gets start = max(existing_ends) + CHUNK_SIZE.
+
+    If existing has MORE entries than parallelism, all entries are kept
+    (don't drop stored ranges when the user runs with smaller parallelism).
+    Only the first `parallelism` workers spawn; the rest still bound chunks.
+    """
+    if not existing:
+        return [(first_run_start + i * CHUNK_SIZE,
+                 first_run_start + i * CHUNK_SIZE) for i in range(parallelism)]
+    ranges = list(existing)
+    while len(ranges) < parallelism:
+        new_start = max(e for _, e in ranges) + CHUNK_SIZE
+        ranges.append((new_start, new_start))
+    return ranges
 
 
 def fmt_duration(seconds: float) -> str:
@@ -220,11 +313,15 @@ def _find_chrome_exe() -> str | None:
 
 
 def ensure_chrome(debug_port: int, profile_dir: str, chrome_exe: str | None,
-                  wait_secs: float = 15.0):
+                  wait_secs: float = 15.0) -> bool:
     """Connect to existing CDP if up; otherwise launch Chrome detached with the
-    given debug port + profile dir and wait until the port is reachable."""
+    given debug port + profile dir and wait until the port is reachable.
+
+    Returns True if Chrome was just launched by this call, False if a CDP
+    listener was already on the port.
+    """
     if _cdp_port_open(debug_port):
-        return
+        return False
     exe = chrome_exe or _find_chrome_exe()
     if not exe:
         raise FileNotFoundError(
@@ -246,8 +343,38 @@ def ensure_chrome(debug_port: int, profile_dir: str, chrome_exe: str | None,
     while time.time() < deadline:
         time.sleep(0.5)
         if _cdp_port_open(debug_port):
-            return
+            return True
     raise TimeoutError(f"Chrome didn't expose CDP on port {debug_port} within {wait_secs}s")
+
+
+async def _cleanup_existing_pages(ctx, launched_chrome: bool):
+    """Close stale tabs in the CDP context. If we just launched Chrome, close
+    every tab (the default new-tab is the only thing there). If Chrome was
+    already running, only close leftover scraper tabs (match by URL) so the
+    user's other tabs are preserved.
+
+    If closing would empty the context, opens a blank placeholder first to
+    keep the Chrome process alive (closing the last window exits Chrome)."""
+    if launched_chrome:
+        victims = list(ctx.pages)
+        label = "default"
+    else:
+        victims = [pg for pg in ctx.pages
+                   if "/newsroom?language=en&page=" in (pg.url or "")]
+        label = "leftover scraper"
+    survivors = [pg for pg in ctx.pages if pg not in victims]
+    if not survivors and victims:
+        try:
+            await ctx.new_page()  # placeholder; worker tabs will be opened by main
+        except Exception:
+            pass
+    for pg in victims:
+        try:
+            await pg.close()
+        except Exception:
+            pass
+    if victims:
+        print(f"Closed {len(victims)} {label} tab(s).", flush=True)
 
 
 class _Tee:
@@ -275,46 +402,79 @@ async def human_move(page, x: int, y: int, duration_ms: int | None = None):
     Real mouse moves take 200–500ms; default Playwright `.move(x, y, steps=N)`
     fires events instantly, which Akamai's behavioral model can spot.
     This interpolates with explicit sleeps between sub-moves.
+
+    Returns (handler_total_sec, n_steps).
     """
     if duration_ms is None:
         duration_ms = random.randint(200, 500)
     sx, sy = _last_mouse_pos
-    steps = max(8, duration_ms // 25)
-    per_step = max(1, duration_ms // steps)
+    steps = min(3, max(2, duration_ms // 75))
+    per_step = (duration_ms / steps) / 1000  # seconds
+    handler_total = 0.0
     for i in range(1, steps + 1):
         t = i / steps
         await page.mouse.move(sx + (x - sx) * t, sy + (y - sy) * t)
-        await page.wait_for_timeout(per_step)
+        # Diagnostic: pull per-handler timings injected via init script.
+        try:
+            batch = await page.evaluate(
+                "(() => { const t = window.__hTimes || []; window.__hTimes = []; return t; })()"
+            )
+            for _name, ms in batch:
+                handler_total += ms / 1000.0
+        except Exception:
+            pass
+        await asyncio.sleep(per_step)
     _last_mouse_pos[0], _last_mouse_pos[1] = x, y
+    return handler_total, steps
 
 
 async def simulate_human(page):
-    """Variable mix of mouse moves, scrolls, and pauses. Number of actions per page
-    is randomized to avoid the 'identical activity profile' bot signal."""
+    """Variable mix of mouse moves, scrolls, and pauses. Returns a compact
+    breakdown string of per-action wall-clock times (temp instrumentation)."""
+    timings: list[tuple[str, float]] = []
     try:
         n_actions = random.choices([0, 1, 2, 3, 4], weights=[10, 30, 35, 20, 5])[0]
         for _ in range(n_actions):
             action = random.choices(
                 ["move", "scroll_down", "scroll_up", "pause"],
-                weights=[40, 30, 10, 20],
+                weights=[5, 35, 15, 45],
             )[0]
+            t0 = time.time()
             if action == "move":
-                await human_move(page, random.randint(150, 1300), random.randint(150, 750))
+                h, n = await human_move(page, random.randint(150, 1300), random.randint(150, 750))
+                tot = time.time() - t0
+                timings.append((f"move(n:{n},h:{h:.2f},o:{max(0, tot-h):.2f})", tot))
             elif action == "scroll_down":
                 await page.evaluate(f"window.scrollBy(0, {random.randint(100, 900)})")
+                timings.append(("scrollD", time.time() - t0))
             elif action == "scroll_up":
                 await page.evaluate(f"window.scrollBy(0, -{random.randint(50, 400)})")
-            # 'pause' is just the wait below
-            await page.wait_for_timeout(random.randint(100, 700))
+                timings.append(("scrollU", time.time() - t0))
+            # else: 'pause' is just the wait below
+            t1 = time.time()
+            await asyncio.sleep(random.randint(100, 700) / 1000)
+            timings.append(("pause", time.time() - t1))
 
         # ~1/30 pages: a no-op click (real click event, doesn't navigate)
         if random.random() < 1 / 30:
+            t0 = time.time()
             await page.evaluate("document.body.click()")
+            timings.append(("click", time.time() - t0))
         # ~1/15 pages: a Tab keypress (fires focus + key events)
         if random.random() < 1 / 15:
+            t0 = time.time()
             await page.keyboard.press("Tab")
+            timings.append(("tab", time.time() - t0))
     except Exception:
         pass
+    if not timings:
+        return "sim=noop"
+    return "sim=" + " ".join(f"{n}:{t:.2f}" for n, t in timings)
+
+
+def _is_target_closed(e: Exception) -> bool:
+    return ("TargetClosed" in type(e).__name__ or
+            "Target page, context or browser has been closed" in str(e))
 
 
 async def navigate(page, url: str, wid: int, page_n: int) -> bool:
@@ -338,10 +498,14 @@ async def navigate(page, url: str, wid: int, page_n: int) -> bool:
                 }""",
                 timeout=8000,
             )
-        except Exception:
+        except Exception as e:
+            if _is_target_closed(e):
+                raise
             print(f"  [w{wid}] page {page_n}: hydrate-timeout", flush=True)
         return True
     except Exception as e:
+        if _is_target_closed(e):
+            raise
         print(f"  [w{wid}] page {page_n}: nav-fail ({e.__class__.__name__})", flush=True)
         return False
 
@@ -356,48 +520,114 @@ def _new_session_max():
 
 class State:
     def __init__(self):
-        self.next_page: int = 0
-        self.end_page: int = 0
-        self.max_page: int = 0
+        # Per-worker ranges, ordered by wid. Updated as workers scrape.
+        self.worker_start: list = []
+        self.worker_end:   list = []
         self.pages_scraped: int = 0
         self.total_new: int = 0
-        self.dup_streak: int = 0
         self.nav_fail_streak: int = 0
         self.existing_rows: dict = {}
         self.runs: list = []
         self.current_run: dict = {}
+        self.nav_started: bool = False
         self.run_start: float = 0.0
         self.session_start: float = 0.0
         self.session_max: float = 0.0
         self.stop = asyncio.Event()
         self.pause_event = asyncio.Event()
         self.pause_event.set()           # not paused at startup
-        self.page_lock = asyncio.Lock()  # guards next_page claim
-        self.csv_lock = asyncio.Lock()   # guards existing_rows + write_all
-        self.state_lock = asyncio.Lock() # guards counters + runs.csv
+        self.csv_lock = asyncio.Lock()   # guards existing_rows + write_all/append_new
+        self.state_lock = asyncio.Lock() # guards counters + runs.csv + ranges save
+
+
+_MOUSEMOVE_TIMER_SCRIPT = """
+(() => {
+  if (window.__hTimesInstalled) return;
+  window.__hTimesInstalled = true;
+  window.__hTimes = [];
+  const origAdd = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function(type, fn, ...rest) {
+    if (type === 'mousemove' && typeof fn === 'function') {
+      const wrapped = function(e) {
+        const t0 = performance.now();
+        try { return fn.call(this, e); }
+        finally { window.__hTimes.push([fn.name || 'anon', performance.now() - t0]); }
+      };
+      return origAdd.call(this, type, wrapped, ...rest);
+    }
+    return origAdd.call(this, type, fn, ...rest);
+  };
+})();
+"""
 
 
 async def worker(wid: int, ctx, state: State, args):
+    """One Chrome tab scraping its assigned page range.
+
+    Range model: each worker owns a persistent (start, end) stored in
+    data/bw_worker_ranges.csv. Always resumes at `start` on every run.
+
+    Fresh worker (end == start, never scraped):
+        Scrape forward from start. Stop on per-worker --dup-stop OR chunk
+        boundary (next worker's start, +inf for the last worker).
+
+    Resuming worker (end > start):
+        Phase 1 (shift discovery): scrape forward from start, counting
+            consecutive dup pages. When SHIFT_DUP_THRESHOLD seen,
+            shift_count = pages_scraped_in_phase1 - threshold.
+            If shift_count <= 0, no shift; worker is done.
+        Phase 2 (catch-up): jump to (old_end + shift_count). Scrape forward
+            like a fresh worker (dup-stop OR chunk boundary).
+    """
     page = await ctx.new_page()
     retry_waits = (0, 30, 60, 300)
+
+    start = state.worker_start[wid]
+    end   = state.worker_end[wid]
+    chunk_boundary = (state.worker_start[wid + 1]
+                      if wid + 1 < len(state.worker_start) else None)
+    is_fresh = (end <= start)
+
+    page_n = start
+    pages_in_phase1 = 0
+    consecutive_dups = 0
+    in_phase_2 = is_fresh   # fresh workers behave like phase 2 (no shift detection)
+    max_scraped = start - 1
+    shift_count_logged: int | None = None
+
+    if is_fresh:
+        print(f"  [w{wid}] FRESH start={start} boundary={chunk_boundary}", flush=True)
+    else:
+        print(f"  [w{wid}] RESUME range=[{start}, {end}] boundary={chunk_boundary}", flush=True)
+
     try:
         while not state.stop.is_set():
-            # Session-break gate (cleared by pacer during long breaks)
             await state.pause_event.wait()
             if state.stop.is_set():
                 break
 
-            # Atomically claim the next page number
-            async with state.page_lock:
-                page_n = state.next_page
-                if page_n > state.end_page:
-                    return
-                state.next_page += 1
+            if chunk_boundary is not None and page_n >= chunk_boundary:
+                print(f"  [w{wid}] reached chunk boundary at page {page_n} — done", flush=True)
+                break
+            if args.to_page is not None and page_n > args.to_page:
+                print(f"  [w{wid}] reached --to-page {args.to_page} — done", flush=True)
+                break
 
             url = f"{BASE_URL}/newsroom?language=en&page={page_n}"
             cycle_start = time.time()
-            print(f"  [w{wid}] page {page_n}: nav...", flush=True)
+            phase = "p1" if not in_phase_2 else ("fresh" if is_fresh else "p2")
+            print(f"  [w{wid}] page {page_n} ({phase}): nav...", flush=True)
 
+            # Start run timer on first navigation (not at script startup)
+            async with state.state_lock:
+                if not state.nav_started:
+                    state.nav_started = True
+                    state.run_start = time.time()
+                    state.current_run["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    write_runs(state.runs)
+
+            # --- TIMING (temporary instrumentation) ---
+            t_nav_start = time.time()
             nav_ok = await navigate(page, url, wid, page_n)
             for wait in retry_waits:
                 if state.stop.is_set():
@@ -410,14 +640,16 @@ async def worker(wid: int, ctx, state: State, args):
                 else:
                     print(f"  [w{wid}] page {page_n}: retry now...", flush=True)
                 nav_ok = await navigate(page, url, wid, page_n)
+            t_nav = time.time() - t_nav_start
 
             if not nav_ok:
                 print(f"\n  [w{wid}] nav retries exhausted — signaling stop")
                 state.stop.set()
                 return
 
-            await simulate_human(page)
+            sim_str = await simulate_human(page)
 
+            t_parse_start = time.time()
             html = await page.content()
             if len(html) < 5000:
                 print(f"  [w{wid}] page {page_n}: suspiciously small response ({len(html)}B) — possibly re-challenged", flush=True)
@@ -432,14 +664,17 @@ async def worker(wid: int, ctx, state: State, args):
                 continue
 
             items = parse_page(html)
+            t_parse = time.time() - t_parse_start
 
             new_count = 0
             updated_count = 0
             async with state.csv_lock:
+                new_items = []
                 for it in items:
                     prev = state.existing_rows.get(it["url"])
                     if prev is None:
                         state.existing_rows[it["url"]] = it
+                        new_items.append(it)
                         new_count += 1
                     else:
                         changed = False
@@ -449,52 +684,100 @@ async def worker(wid: int, ctx, state: State, args):
                                 changed = True
                         if changed:
                             updated_count += 1
-                if new_count or updated_count:
+                # Fast path: only new rows → append. Full rewrite only when an
+                # existing row was back-filled (touches rows in the middle).
+                if updated_count:
                     write_all(state.existing_rows)
+                elif new_items:
+                    append_new(new_items)
+
+            if page_n > max_scraped:
+                max_scraped = page_n
+            if new_count == 0:
+                consecutive_dups += 1
+            else:
+                consecutive_dups = 0
+            if not in_phase_2:
+                pages_in_phase1 += 1
 
             async with state.state_lock:
                 state.total_new += new_count
                 state.pages_scraped += 1
                 state.nav_fail_streak = 0
-                if page_n > state.max_page:
-                    state.max_page = page_n
-                state.current_run["to_page"]     = str(state.max_page)
+                # Persist the worker's end whenever it advances.
+                if max_scraped > state.worker_end[wid]:
+                    state.worker_end[wid] = max_scraped
+                    save_worker_ranges(list(zip(state.worker_start, state.worker_end)))
+                running_max = max(state.worker_end)
+                state.current_run["to_page"]     = str(running_max)
                 state.current_run["total_pages"] = str(state.pages_scraped)
                 state.current_run["duration"]    = fmt_duration(time.time() - state.run_start)
-                # dup_streak is approximate under parallelism — counts page
-                # completions in finish order. Reset by any new>0 completion.
-                if new_count == 0:
-                    state.dup_streak += 1
-                    if state.dup_streak >= args.dup_stop:
-                        print(f"\n  [w{wid}] {state.dup_streak} consecutive all-duplicate page completions — done")
-                        state.stop.set()
-                else:
-                    state.dup_streak = 0
                 write_runs(state.runs)
                 tn = state.total_new
 
-            print(f"  [w{wid}] page {page_n}: new={new_count}  updated={updated_count}  total_new={tn}", flush=True)
+            t_total = time.time() - cycle_start
+            print(f"  [w{wid}] page {page_n} ({phase}): new={new_count}  updated={updated_count}  "
+                  f"total_new={tn}  cdup={consecutive_dups}  "
+                  f"[nav={t_nav:.2f}s {sim_str} parse={t_parse:.2f}s total={t_total:.2f}s]",
+                  flush=True)
 
+            # until-date stays a GLOBAL stop — once we've reached articles older
+            # than the cutoff, no worker should keep going regardless of range.
             if args.until_date and items:
                 page_dts = [it["datetime"] for it in items if it.get("datetime")]
                 if page_dts and all(dt[:10] < args.until_date for dt in page_dts):
-                    print(f"\n  [w{wid}] all items on page {page_n} older than {args.until_date} — done")
+                    print(f"\n  [w{wid}] all items on page {page_n} older than {args.until_date} — global stop")
                     state.stop.set()
                     return
 
             if not items:
-                print(f"  [w{wid}] 0 items parsed on page {page_n} — stopping")
-                state.stop.set()
-                return
+                # Past end of valid pages for this worker's region. Stop just
+                # this worker (other workers' ranges may still be valid).
+                print(f"  [w{wid}] 0 items parsed on page {page_n} — stopping this worker", flush=True)
+                break
 
-            # Cycle-target sleep: target whole-iteration time ~3s (log-normal),
-            # subtract elapsed nav+hydration+sim+parse+write so the inter-request
-            # cadence the server sees is what's randomized, not the leftover pad.
-            target = min(15.0, random.lognormvariate(math.log(3) - 0.18, 0.6))
+            # Stop / phase-transition decisions
+            if not in_phase_2:
+                # Phase 1: shift discovery. Once we see SHIFT_DUP_THRESHOLD
+                # consecutive dups, jump to (old_end + shift_count) and continue
+                # like a fresh worker — even when shift_count == 0 (no shift at
+                # top of range, but new content may still exist past old_end).
+                if consecutive_dups >= SHIFT_DUP_THRESHOLD:
+                    shift_count = pages_in_phase1 - SHIFT_DUP_THRESHOLD
+                    shift_count_logged = shift_count
+                    new_page_n = end + shift_count
+                    if chunk_boundary is not None and new_page_n >= chunk_boundary:
+                        print(f"  [w{wid}] phase-2 target {new_page_n} >= chunk boundary {chunk_boundary} — done", flush=True)
+                        break
+                    print(f"  [w{wid}] phase 1 done: shift_count={shift_count}, jumping to page {new_page_n}", flush=True)
+                    page_n = new_page_n
+                    in_phase_2 = True
+                    consecutive_dups = 0
+                    # skip page_n += 1 — we just set it explicitly
+                    target = min(15.0, random.lognormvariate(math.log(args.cycle_mean) - 0.18, 0.6))
+                    elapsed = time.time() - cycle_start
+                    if target > elapsed:
+                        await asyncio.sleep(target - elapsed)
+                    continue
+            else:
+                # Phase 2 / fresh: dup-stop
+                if consecutive_dups >= args.dup_stop:
+                    print(f"  [w{wid}] dup-stop reached ({args.dup_stop} consec dups) — done", flush=True)
+                    break
+
+            page_n += 1
+
+            # Cycle-target sleep: target whole-iteration time ~--cycle-mean s
+            # (log-normal, σ=0.6), subtract elapsed nav+hydration+sim+parse+write
+            # so the inter-request cadence the server sees is what's randomized.
+            target = min(15.0, random.lognormvariate(math.log(args.cycle_mean) - 0.18, 0.6))
             elapsed = time.time() - cycle_start
             if target > elapsed:
                 await asyncio.sleep(target - elapsed)
     finally:
+        async with state.state_lock:
+            print(f"  [w{wid}] DONE  range=[{state.worker_start[wid]}, {state.worker_end[wid]}]"
+                  f"  shift={shift_count_logged}", flush=True)
         try:
             await page.close()
         except Exception:
@@ -529,7 +812,7 @@ async def session_pacer(state: State):
 async def probe_once(args):
     """--probe: fetch page 1, print structure, exit (no CSV writes)."""
     try:
-        ensure_chrome(args.debug_port, args.chrome_profile, args.chrome_exe)
+        launched_chrome = ensure_chrome(args.debug_port, args.chrome_profile, args.chrome_exe)
     except Exception as e:
         print(f"Could not start/find Chrome on CDP port {args.debug_port}: {e}")
         return
@@ -541,6 +824,7 @@ async def probe_once(args):
             print(f"Error: {e}")
             return
         ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
+        await _cleanup_existing_pages(ctx, launched_chrome)
         page = await ctx.new_page()
         try:
             url = f"{BASE_URL}/newsroom?language=en&page=1"
@@ -584,15 +868,20 @@ async def main_async():
     parser.add_argument("--chrome-profile", type=str, default=r"C:\bw-chrome-profile",
                         help="Chrome user-data-dir for auto-launch")
     parser.add_argument("--from-page",  type=int, default=None,
-                        help="start page (default: max to_page in runs + 1, else 1)")
+                        help="W0 start for first-run init only. Ignored if "
+                             f"{RANGES_CSV} already exists (delete to re-init).")
     parser.add_argument("--to-page",    type=int, default=None,
-                        help="end page (inclusive). If omitted, scrape until dup-stop or until-date triggers.")
+                        help="global per-worker upper bound. Worker stops when page_n > --to-page.")
     parser.add_argument("--until-date", type=str, default=None,
-                        help="stop when ALL items on a page have datetime < this YYYY-MM-DD")
-    parser.add_argument("--dup-stop",   type=int, default=5,
-                        help="stop after N consecutive all-duplicate page completions (default 5)")
+                        help="global stop when ALL items on a page have datetime < this YYYY-MM-DD")
+    parser.add_argument("--dup-stop",   type=int, default=8,
+                        help="per-worker: stop after N consecutive all-duplicate pages "
+                             "(applies in fresh mode and phase 2; phase 1 always uses "
+                             f"SHIFT_DUP_THRESHOLD={SHIFT_DUP_THRESHOLD}). default 8")
     parser.add_argument("--parallelism", type=int, default=2,
                         help="number of concurrent tabs/workers (default 2)")
+    parser.add_argument("--cycle-mean", type=float, default=3.0,
+                        help="per-worker cycle-target sleep mean in seconds, log-normal σ=0.6 (default 3.0)")
     parser.add_argument("--probe",      action="store_true",
                         help="fetch page 1, print structure, exit (no CSV writes)")
     args = parser.parse_args()
@@ -608,29 +897,42 @@ async def main_async():
     state.runs = load_runs()
     prior_to_pages = [int(r["to_page"]) for r in state.runs if r.get("to_page", "").isdigit()]
     max_page = max(prior_to_pages) if prior_to_pages else 0
-    start_page = args.from_page if args.from_page is not None else (max_page + 1 if max_page else 1)
-    end_page = args.to_page if args.to_page is not None else start_page + 100000
-    state.next_page = start_page
-    state.end_page = end_page
+
+    existing_ranges = load_worker_ranges()
+    if existing_ranges:
+        if args.from_page is not None:
+            print(f"  --from-page {args.from_page} IGNORED: {RANGES_CSV} exists; delete to re-init")
+        first_run_start = 0  # unused
+    else:
+        first_run_start = (args.from_page if args.from_page is not None
+                           else (max_page + 1 if max_page else 1))
+    ranges = compute_worker_ranges(existing_ranges, args.parallelism, first_run_start)
+    save_worker_ranges(ranges)   # persist any extension (new workers added)
+    state.worker_start = [s for s, _ in ranges]
+    state.worker_end   = [e for _, e in ranges]
 
     existing_dts = [r.get("datetime", "") for r in state.existing_rows.values() if r.get("datetime")]
     newest = max(existing_dts) if existing_dts else "(none)"
     oldest = min(existing_dts) if existing_dts else "(none)"
     print(f"Existing: {len(state.existing_rows)} URLs in {OUTPUT_CSV}")
     print(f"  newest: {newest}   oldest: {oldest}   max page seen: {max_page or '(none)'}")
-    print(f"Pages {start_page}..{end_page}   parallelism={args.parallelism}", end="")
+    print(f"Worker ranges (parallelism={args.parallelism}):")
+    for wid, (s, e) in enumerate(ranges):
+        kind = "FRESH" if e <= s else "RESUME"
+        print(f"  w{wid}: [{s}, {e}] {kind}")
     if args.until_date:
-        print(f"   until_date={args.until_date}", end="")
-    print("\n")
+        print(f"  until_date={args.until_date}")
+    print()
 
-    state.run_start = time.time()
     state.session_start = time.time()
     state.session_max = _new_session_max()
     print(f"  session window: {state.session_max/60:.0f}min before break\n")
 
+    # from_page/to_page in runs.csv: span across all workers' ranges
+    # (legacy schema — kept stable so prior-run lookup still works).
     state.current_run = {
         "started_at":  datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "from_page":   str(start_page),
+        "from_page":   str(min(state.worker_start)),
         "to_page":     "",
         "total_pages": "0",
         "duration":    "00:00:00",
@@ -639,7 +941,7 @@ async def main_async():
     write_runs(state.runs)
 
     try:
-        ensure_chrome(args.debug_port, args.chrome_profile, args.chrome_exe)
+        launched_chrome = ensure_chrome(args.debug_port, args.chrome_profile, args.chrome_exe)
     except Exception as e:
         print(f"Could not start/find Chrome on CDP port {args.debug_port}: {e}")
         return
@@ -651,19 +953,9 @@ async def main_async():
             print(f"Failed to connect to Chrome via CDP on port {args.debug_port}.")
             print(f"Error: {e}")
             return
-
         ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
-
-        # Close any leftover scraper tabs from prior runs that didn't exit
-        # cleanly. Match by URL so we don't touch the user's primer/other tabs.
-        stale = [pg for pg in ctx.pages if "/newsroom?language=en&page=" in (pg.url or "")]
-        for pg in stale:
-            try:
-                await pg.close()
-            except Exception:
-                pass
-        if stale:
-            print(f"Closed {len(stale)} leftover scraper tab(s) from prior run(s).", flush=True)
+        await _cleanup_existing_pages(ctx, launched_chrome)
+        await ctx.add_init_script(script=_MOUSEMOVE_TIMER_SCRIPT)
         print(f"Connected. Context has {len(ctx.pages)} existing tab(s); opening {args.parallelism} more.", flush=True)
 
         pacer_task = asyncio.create_task(session_pacer(state))
@@ -681,7 +973,10 @@ async def main_async():
     state.current_run["duration"] = fmt_duration(time.time() - state.run_start)
     write_runs(state.runs)
     print(f"\nDone. {state.total_new} new articles -> {OUTPUT_CSV}")
-    print(f"Ran {state.pages_scraped} pages ({state.current_run['from_page']} -> {state.current_run['to_page'] or 'none'}) in {state.current_run['duration']}")
+    print(f"Ran {state.pages_scraped} pages in {state.current_run['duration']}")
+    print("Worker ranges (saved):")
+    for wid, (s, e) in enumerate(zip(state.worker_start, state.worker_end)):
+        print(f"  w{wid}: [{s}, {e}]")
 
 
 if __name__ == "__main__":
