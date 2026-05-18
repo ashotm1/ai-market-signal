@@ -765,10 +765,11 @@ async def worker(wid: int, ctx, state: State, args):
                     shift_count = pages_in_phase1 - SHIFT_DUP_THRESHOLD
                     shift_count_logged = shift_count
                     new_page_n = end + shift_count
-                    print(f"  [w{wid}] phase 1 done: shift_count={shift_count}, jumping to page {new_page_n}; start advanced {state.worker_start[wid]}->{new_page_n}", flush=True)
+                    new_start = start + shift_count   # advance start by actual shift only, NOT by prior phase-2 distance
+                    print(f"  [w{wid}] phase 1 done: shift_count={shift_count}, jumping to page {new_page_n}; start advanced {state.worker_start[wid]}->{new_start}", flush=True)
                     page_n = new_page_n
                     async with state.state_lock:
-                        state.worker_start[wid] = new_page_n
+                        state.worker_start[wid] = new_start
                         save_worker_ranges(list(zip(state.worker_start, state.worker_end)))
                     in_phase_2 = True
                     consecutive_dups = 0
