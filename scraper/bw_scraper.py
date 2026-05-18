@@ -248,15 +248,35 @@ def load_worker_ranges() -> list:
 
 
 def save_worker_ranges(ranges: list):
-    """Atomic rewrite. ranges is [(start, end), ...] ordered by wid."""
+    """Atomic rewrite. Rows are sorted by start_page so wid in the persisted
+    file always reflects page-order (lowest start = wid 0). The in-memory
+    wid for a running worker is NOT reassigned — sorting is for persistence
+    only, so the NEXT run loads workers in page-sorted order even after
+    relocations scrambled them this run."""
     os.makedirs(os.path.dirname(RANGES_CSV) or ".", exist_ok=True)
     tmp = RANGES_CSV + ".tmp"
+    sorted_ranges = sorted(ranges, key=lambda r: r[0])
     with open(tmp, "w", newline="\n", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=RANGES_FIELDS)
         w.writeheader()
-        for wid, (s, e) in enumerate(ranges):
+        for wid, (s, e) in enumerate(sorted_ranges):
             w.writerow({"wid": wid, "start_page": s, "end_page": e})
     _atomic_replace(tmp, RANGES_CSV)
+
+
+def _in_other_worker_territory(state, wid: int, page_n: int) -> bool:
+    """True if page_n is within any OTHER worker's [start, end] range."""
+    for other_wid in range(len(state.worker_start)):
+        if other_wid == wid:
+            continue
+        if state.worker_start[other_wid] <= page_n <= state.worker_end[other_wid]:
+            return True
+    return False
+
+
+def _relocation_start(state) -> int:
+    """Fresh-chunk start = max known page across all workers + CHUNK_SIZE."""
+    return max(max(state.worker_start), max(state.worker_end)) + CHUNK_SIZE
 
 
 def compute_worker_ranges(existing: list, parallelism: int, first_run_start: int) -> list:
@@ -584,8 +604,6 @@ async def worker(wid: int, ctx, state: State, args):
 
     start = state.worker_start[wid]
     end   = state.worker_end[wid]
-    chunk_boundary = (state.worker_start[wid + 1]
-                      if wid + 1 < len(state.worker_start) else None)
     is_fresh = (end <= start)
 
     page_n = start
@@ -596,9 +614,9 @@ async def worker(wid: int, ctx, state: State, args):
     shift_count_logged: int | None = None
 
     if is_fresh:
-        print(f"  [w{wid}] FRESH start={start} boundary={chunk_boundary}", flush=True)
+        print(f"  [w{wid}] FRESH start={start}", flush=True)
     else:
-        print(f"  [w{wid}] RESUME range=[{start}, {end}] boundary={chunk_boundary}", flush=True)
+        print(f"  [w{wid}] RESUME range=[{start}, {end}]", flush=True)
 
     try:
         while not state.stop.is_set():
@@ -606,9 +624,6 @@ async def worker(wid: int, ctx, state: State, args):
             if state.stop.is_set():
                 break
 
-            if chunk_boundary is not None and page_n >= chunk_boundary:
-                print(f"  [w{wid}] reached chunk boundary at page {page_n} — done", flush=True)
-                break
             if args.to_page is not None and page_n > args.to_page:
                 print(f"  [w{wid}] reached --to-page {args.to_page} — done", flush=True)
                 break
@@ -742,15 +757,19 @@ async def worker(wid: int, ctx, state: State, args):
                 # consecutive dups, jump to (old_end + shift_count) and continue
                 # like a fresh worker — even when shift_count == 0 (no shift at
                 # top of range, but new content may still exist past old_end).
+                # Also advance the stored start to the jump position: pages
+                # between (old_start + pages_in_phase1) and (old_end + shift_count)
+                # are known dups (shifted-down content already in CSV), so next
+                # run can skip directly to the new frontier for shift detection.
                 if consecutive_dups >= SHIFT_DUP_THRESHOLD:
                     shift_count = pages_in_phase1 - SHIFT_DUP_THRESHOLD
                     shift_count_logged = shift_count
                     new_page_n = end + shift_count
-                    if chunk_boundary is not None and new_page_n >= chunk_boundary:
-                        print(f"  [w{wid}] phase-2 target {new_page_n} >= chunk boundary {chunk_boundary} — done", flush=True)
-                        break
-                    print(f"  [w{wid}] phase 1 done: shift_count={shift_count}, jumping to page {new_page_n}", flush=True)
+                    print(f"  [w{wid}] phase 1 done: shift_count={shift_count}, jumping to page {new_page_n}; start advanced {state.worker_start[wid]}->{new_page_n}", flush=True)
                     page_n = new_page_n
+                    async with state.state_lock:
+                        state.worker_start[wid] = new_page_n
+                        save_worker_ranges(list(zip(state.worker_start, state.worker_end)))
                     in_phase_2 = True
                     consecutive_dups = 0
                     # skip page_n += 1 — we just set it explicitly
@@ -760,7 +779,29 @@ async def worker(wid: int, ctx, state: State, args):
                         await asyncio.sleep(target - elapsed)
                     continue
             else:
-                # Phase 2 / fresh: dup-stop
+                # Phase 2 / fresh: relocate if we crossed into another worker's
+                # territory and confirmed via SHIFT_DUP_THRESHOLD dups; otherwise
+                # standard dup-stop ends this worker.
+                if (consecutive_dups >= SHIFT_DUP_THRESHOLD
+                        and _in_other_worker_territory(state, wid, page_n)):
+                    new_start = _relocation_start(state)
+                    print(f"  [w{wid}] crossed into another worker's territory at page {page_n} "
+                          f"(cdup={consecutive_dups}) — relocating to fresh chunk at {new_start}", flush=True)
+                    async with state.state_lock:
+                        state.worker_start[wid] = new_start
+                        state.worker_end[wid]   = new_start
+                        save_worker_ranges(list(zip(state.worker_start, state.worker_end)))
+                    page_n = new_start
+                    end = new_start
+                    is_fresh = True
+                    in_phase_2 = True
+                    consecutive_dups = 0
+                    max_scraped = new_start - 1
+                    target = min(15.0, random.lognormvariate(math.log(args.cycle_mean) - 0.18, 0.6))
+                    elapsed = time.time() - cycle_start
+                    if target > elapsed:
+                        await asyncio.sleep(target - elapsed)
+                    continue
                 if consecutive_dups >= args.dup_stop:
                     print(f"  [w{wid}] dup-stop reached ({args.dup_stop} consec dups) — done", flush=True)
                     break
