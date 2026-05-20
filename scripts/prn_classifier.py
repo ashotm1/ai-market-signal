@@ -28,13 +28,13 @@ _TITLE_VERB = re.compile(
     r"\b(announces?|reports?|launches?|introduces?|completes?|acquires?|appoints?|"
     r"names?|elects?|provides?|releases?|enters?|expands?|files?|receives?|wins?|"
     r"awards?|signs?|secures?|achieves?|unveils?|delivers?|posts?|to\s+acquire|"
-    r"to\s+merge|to\s+present|to\s+report|sets?\b|raises?|priced?\b|closes?\b)\b",
+    r"to\s+merge|to\s+present|to\s+report|sets?|raises?|priced?|closes?)\b",
     re.IGNORECASE,
 )
 
 # Legal-entity suffixes only — do not strip industry words like "Therapeutics".
 _LEGAL_SUFFIX = re.compile(
-    r"\b(?:common\s+stock|class\s+[a-z](?:\s+common\s+stock)?|"
+    r"\b(?:common\s+stock|class\s+[a-z]|"
     r"inc|corp|corporation|company|co|ltd|limited|llc|plc|sa|nv|ag|holdings?)\b\.?",
     re.IGNORECASE,
 )

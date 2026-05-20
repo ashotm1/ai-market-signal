@@ -56,43 +56,6 @@ _DATE_RE = re.compile(
 )
 
 
-DETAILS_CSV = "data/prices/ticker_details.csv"
-
-
-def _load_name_ticker() -> dict:
-    """Build name→ticker lookup from ticker_details.csv (most recent entry per ticker)."""
-    if not os.path.exists(DETAILS_CSV):
-        return {}
-    lookup = {}
-    with open(DETAILS_CSV, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            name = (row.get("name") or "").strip()
-            ticker = (row.get("ticker") or "").strip()
-            if name and ticker:
-                lookup[name.lower()] = ticker
-    return lookup
-
-
-def _word_prefix_match(source: str, lookup: dict) -> str:
-    """Match source to a ticker_details name via word-level prefix, then first-2-word fallback."""
-    s_words = source.lower().strip().split()
-    if not s_words:
-        return ""
-    # pass 1: shorter is a full word-level prefix of longer
-    for name, ticker in lookup.items():
-        n_words = name.split()
-        shorter, longer = (s_words, n_words) if len(s_words) <= len(n_words) else (n_words, s_words)
-        if all(a == b for a, b in zip(shorter, longer)):
-            return ticker
-    # pass 2: first 2 words match (both must have at least 2 words)
-    if len(s_words) >= 2:
-        for name, ticker in lookup.items():
-            n_words = name.split()
-            if len(n_words) >= 2 and s_words[:2] == n_words[:2]:
-                return ticker
-    return ""
-
-
 def _search_url(date_str: str, page: int) -> str:
     d = f"%5B{date_str}%2520TO%2520{date_str}%5D"
     return f"{BASE_URL}/en/search/date/{d}/exchange/Nasdaq,NYSE/load/more?page={page}&pageSize=50"
@@ -157,7 +120,7 @@ def parse_page(html: str) -> list:
     return items
 
 
-def scrape_day(d: date, session, existing_urls: set, name_lookup: dict) -> tuple:
+def scrape_day(d: date, session, existing_urls: set) -> tuple:
     """Returns (total, new_count, blocked) where blocked=True signals a hard stop."""
     date_str = d.strftime("%Y-%m-%d")
     total = new_count = page = 0
@@ -188,9 +151,6 @@ def scrape_day(d: date, session, existing_urls: set, name_lookup: dict) -> tuple
 
         print(f"parsing...", end=" ", flush=True)
         items = parse_page(body)
-        for item in items:
-            if not item["ticker"] and item["source"]:
-                item["ticker"] = _word_prefix_match(item["source"], name_lookup)
         if not items:
             print("0 items — done")
             break
@@ -264,16 +224,13 @@ def main():
     existing_urls = load_existing_urls()
     print(f"Already have {len(existing_urls)} articles in CSV\n")
 
-    name_lookup = _load_name_ticker()
-    print(f"Loaded {len(name_lookup)} names from ticker_details for fallback matching\n")
-
     session   = requests.Session(impersonate="chrome124")
     total_new = 0
     empty_streak = 0
     block_streak = 0
 
     for d in date_range(start, end):
-        total, new, blocked = scrape_day(d, session, existing_urls, name_lookup)
+        total, new, blocked = scrape_day(d, session, existing_urls)
         total_new += new
         print(f"  {d}  {total} articles  {new} new{' [BLOCKED]' if blocked else ''}")
 

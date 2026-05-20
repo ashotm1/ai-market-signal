@@ -521,43 +521,47 @@ async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = Fa
 
 TICKER_UNIVERSE_CSV = "data/ticker_universe.csv"
 _UNIVERSE_EXCHANGES = ["XNAS", "XNYS", "XASE"]
+# CS = Common Stock (domestic), ADRC = American Depository Receipt Common
+# (foreign companies trading on US exchanges, e.g. BABA, EDU, TAK, NIO, GOL).
+_UNIVERSE_TYPES = ["CS", "ADRC"]
 _UNIVERSE_FIELDS = ["ticker", "name", "primary_exchange", "type", "active", "list_date", "delisted_utc", "cik"]
 
 
 async def fetch_ticker_universe():
-    """Pull all CS tickers (active + delisted) from Polygon for XNAS/XNYS/XASE."""
+    """Pull all CS + ADRC tickers (active + delisted) from Polygon for XNAS/XNYS/XASE."""
     if not MASSIVE_API_KEY:
         raise RuntimeError("Missing API key. Set MASSIVE_API_KEY or POLYGON_API_KEY.")
 
     all_rows: list[dict] = []
 
     async with httpx.AsyncClient(timeout=30) as client:
-        for exchange in _UNIVERSE_EXCHANGES:
-            for active in ("true", "false"):
-                label = f"{exchange} active={active}"
-                url = (
-                    f"{POLYGON_BASE}/v3/reference/tickers"
-                    f"?market=stocks&type=CS&exchange={exchange}&active={active}"
-                    f"&limit=1000&apiKey={MASSIVE_API_KEY}"
-                )
-                page = 0
-                while url:
-                    r = await client.get(url, timeout=30)
-                    if r.status_code != 200:
-                        print(f"  {label} — HTTP {r.status_code}, stopping", flush=True)
-                        break
-                    data = r.json()
-                    results = data.get("results", [])
-                    for row in results:
-                        all_rows.append({f: row.get(f) for f in _UNIVERSE_FIELDS})
-                    page += 1
-                    next_url = data.get("next_url")
-                    url = f"{next_url}&apiKey={MASSIVE_API_KEY}" if next_url else None
-                print(f"  {label}: {page} pages", flush=True)
+        for ticker_type in _UNIVERSE_TYPES:
+            for exchange in _UNIVERSE_EXCHANGES:
+                for active in ("true", "false"):
+                    label = f"{ticker_type} {exchange} active={active}"
+                    url = (
+                        f"{POLYGON_BASE}/v3/reference/tickers"
+                        f"?market=stocks&type={ticker_type}&exchange={exchange}&active={active}"
+                        f"&limit=1000&apiKey={MASSIVE_API_KEY}"
+                    )
+                    page = 0
+                    while url:
+                        r = await client.get(url, timeout=30)
+                        if r.status_code != 200:
+                            print(f"  {label} — HTTP {r.status_code}, stopping", flush=True)
+                            break
+                        data = r.json()
+                        results = data.get("results", [])
+                        for row in results:
+                            all_rows.append({f: row.get(f) for f in _UNIVERSE_FIELDS})
+                        page += 1
+                        next_url = data.get("next_url")
+                        url = f"{next_url}&apiKey={MASSIVE_API_KEY}" if next_url else None
+                    print(f"  {label}: {page} pages", flush=True)
 
     df = pd.DataFrame(all_rows).drop_duplicates(subset=["ticker"])
     df.to_csv(TICKER_UNIVERSE_CSV, index=False)
-    print(f"\nDone. {len(df)} unique tickers → {TICKER_UNIVERSE_CSV}")
+    print(f"\nDone. {len(df)} unique tickers -> {TICKER_UNIVERSE_CSV}")
 
 
 def main():
