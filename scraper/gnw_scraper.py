@@ -179,13 +179,24 @@ def scrape_day(d: date, session, existing_urls: set) -> tuple:
     return total, new_count, False
 
 
+# Scraped HTML occasionally carries "unusual" line terminators (LS/PS/NEL).
+# They corrupt nothing but trip editors' "unusual line terminator" warnings.
+# Map each to a space (1:1, so field lengths are preserved).
+_LINE_SEP_FIX = {0x2028: " ", 0x2029: " ", 0x85: " "}
+
+
+def _clean_row(row: dict) -> dict:
+    return {k: (v.translate(_LINE_SEP_FIX) if isinstance(v, str) else v)
+            for k, v in row.items()}
+
+
 def _append(rows: list):
     file_exists = os.path.exists(OUTPUT_CSV)
     with open(OUTPUT_CSV, "a", newline="\n", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         if not file_exists:
             writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows(_clean_row(r) for r in rows)
 
 
 def load_existing_urls() -> set:

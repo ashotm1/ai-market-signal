@@ -21,6 +21,17 @@ import time
 import httpx
 from bs4 import BeautifulSoup
 
+# Article bodies can exceed the default 128 KB per-field cap. Raise it as high
+# as the platform allows (sys.maxsize overflows the csv module's C long on
+# Windows, so back off until it's accepted).
+_limit = sys.maxsize
+while True:
+    try:
+        csv.field_size_limit(_limit)
+        break
+    except OverflowError:
+        _limit //= 10
+
 INPUT_CSV  = "data/gnw_signal_filtered.csv"
 OUTPUT_CSV = "data/gnw_signal_articles.csv"
 
@@ -92,6 +103,17 @@ def _stringify(v):
     return str(v)
 
 
+# Scraped HTML occasionally carries "unusual" line terminators (LS/PS/NEL).
+# They corrupt nothing but trip editors' "unusual line terminator" warnings.
+# Map each to a space — 1:1, so field lengths (and article_body_len) are kept.
+_LINE_SEP_FIX = {0x2028: " ", 0x2029: " ", 0x85: " "}
+
+
+def _clean_row(row: dict) -> dict:
+    return {k: (v.translate(_LINE_SEP_FIX) if isinstance(v, str) else v)
+            for k, v in row.items()}
+
+
 def _extract_body(html: str) -> str:
     """Return text of the marked itemprop='articleBody' container, or ''."""
     soup = BeautifulSoup(html, "html.parser")
@@ -145,7 +167,7 @@ async def fetch_one(client: httpx.AsyncClient, url: str, attempts: int = 3) -> t
     return 0, ""
 
 
-async def worker(wid: int, queue: asyncio.Queue, client, writer, lock, args, state):
+async def worker(queue: asyncio.Queue, client, writer, lock, args, state):
     while True:
         row = await queue.get()
         if row is None:
@@ -158,13 +180,13 @@ async def worker(wid: int, queue: asyncio.Queue, client, writer, lock, args, sta
         else:
             fields = {k: "" for k in EXTRACTED_FIELDS if k != "http_status"}
         fields["http_status"] = str(status)
-        out_row = {**row, **fields}
+        out_row = _clean_row({**row, **fields})
         async with lock:
             writer.writerow(out_row)
             state["written"] += 1
             if state["written"] % 5 == 0:
                 state["fh"].flush()
-                print(f"  [w{wid}] written={state['written']}/{state['total']} last_status={status} url=...{url[-60:]}", flush=True)
+                print(f"  written={state['written']}/{state['total']} last_status={status} url=...{url[-60:]}", flush=True)
         await asyncio.sleep(random.uniform(args.delay_min, args.delay_max))
         queue.task_done()
 
@@ -217,8 +239,8 @@ async def main_async(args):
     t0 = time.time()
     async with httpx.AsyncClient(headers=headers, timeout=20.0) as client:
         workers = [
-            asyncio.create_task(worker(i, queue, client, writer, lock, args, state))
-            for i in range(args.workers)
+            asyncio.create_task(worker(queue, client, writer, lock, args, state))
+            for _ in range(args.workers)
         ]
         await asyncio.gather(*workers)
 

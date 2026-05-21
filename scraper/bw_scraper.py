@@ -194,6 +194,17 @@ def load_existing_rows() -> dict:
     return rows
 
 
+# Scraped HTML occasionally carries "unusual" line terminators (LS/PS/NEL).
+# They corrupt nothing but trip editors' "unusual line terminator" warnings.
+# Map each to a space (1:1, so field lengths are preserved).
+_LINE_SEP_FIX = {0x2028: " ", 0x2029: " ", 0x85: " "}
+
+
+def _clean_row(row: dict) -> dict:
+    return {k: (v.translate(_LINE_SEP_FIX) if isinstance(v, str) else v)
+            for k, v in row.items()}
+
+
 def write_all(rows: dict):
     """Atomic full rewrite via tmp + rename. Use only when existing rows were
     updated in place — otherwise prefer append_new()."""
@@ -202,7 +213,7 @@ def write_all(rows: dict):
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
         w.writeheader()
         for row in rows.values():
-            w.writerow({k: row.get(k, "") for k in CSV_FIELDS})
+            w.writerow(_clean_row({k: row.get(k, "") for k in CSV_FIELDS}))
     _atomic_replace(tmp, OUTPUT_CSV)
 
 
@@ -215,7 +226,7 @@ def append_new(rows: list):
         if needs_header:
             w.writeheader()
         for row in rows:
-            w.writerow({k: row.get(k, "") for k in CSV_FIELDS})
+            w.writerow(_clean_row({k: row.get(k, "") for k in CSV_FIELDS}))
 
 
 def load_runs() -> list:
