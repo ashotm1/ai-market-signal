@@ -4,9 +4,10 @@ fields.
 
 BW is behind Akamai Bot Manager: plain HTTP gets 403. Like bw_scraper.py, this
 attaches Playwright to a real warmed Chrome over CDP (persisted Akamai cookies
-in the isolated profile carry the challenge). It fetches with a SINGLE tab,
-serially, with randomized human-paced delays — at equal throughput that reads
-as less bot-like than several tabs firing in lockstep bursts from one session.
+in the isolated profile carry the challenge). It fetches with --parallelism tabs
+in one event loop, each with randomized human-paced delays + simulate_human.
+More tabs = faster but more block-prone (concurrent navigations from one session
+are a bot signal); the block-detector below is the safety net.
 
 Structure (consistent 2021 -> 2026, one re-migrated template):
   * JSON-LD NewsArticle  -> headline, datePublished/Modified (ISO+TZ), author
@@ -28,10 +29,15 @@ Input:  data/bw_signal_filtered.csv (default; override with --input)
 Output: per-year files data/bw_articles/bw_<year>_articles.csv (default, routed by
         each row's `datetime` year), or a single file via --output.
 
-Each run tees all output to logs/bw_extract_<ts>.log. Logs every non-success
-explicitly and survives per-page parse errors. A run of consecutive Akamai
-blocks self-aborts WITHOUT writing those rows (so a rerun retries them) to avoid
-burning the warmed cookies.
+Each run tees all output to logs/bw_extract_<ts>.log with [wN] per-worker lines,
+logs every non-success, and survives per-page parse errors.
+
+Block-detector: classifies session-level blocks (nav 'blocked'/403/429, or a 200
+with no release container = silent challenge) vs URL-level misses (404/timeout),
+and aborts ALL workers the moment blocks cluster — --block-abort consecutive, or
+>=--block-rate of the last --block-window requests — WITHOUT writing those rows
+(a rerun after re-warming retries them). Stops while it's still a recoverable
+session block, before continued hammering escalates to an IP-level ban.
 
 Append-safe: skips URLs already present across the output file(s).
 """
@@ -45,6 +51,7 @@ import random
 import re
 import sys
 import time
+from collections import deque
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
@@ -217,6 +224,91 @@ async def fetch_one(page, url: str) -> tuple[str, str]:
     return status, html
 
 
+def _is_block(status: str, html: str) -> bool:
+    """Session-level block (Akamai pushing back), as opposed to a URL-level miss.
+
+    - explicit deny / challenge: nav_status 'blocked' (markers), or 403 / 429
+    - silent block: 200 but the page has no release container — a challenge/sensor
+      page that slipped past BLOCK_MARKERS.
+    404 and 0 (timeout) are URL/network misses, NOT blocks.
+    """
+    if status in ("blocked", "403", "429"):
+        return True
+    if status == "200" and "bw-release-story" not in html and "bw-release-body" not in html:
+        return True
+    return False
+
+
+def _detector_trips(state, args) -> bool:
+    """Two escalation signals: a run of consecutive blocks, or a high block rate
+    in the recent window. Either means the session is flagged — stop before it
+    escalates to an IP-level ban."""
+    if state["consec_block"] >= args.block_abort:
+        return True
+    w = state["window"]
+    return len(w) >= args.block_window and (sum(w) / len(w)) >= args.block_rate
+
+
+async def worker(wid, queue, page, writer_for, lock, args, state):
+    while True:
+        row = await queue.get()
+        try:
+            if row is None or state["abort"].is_set():
+                return
+            url = row["url"]
+            if not url.startswith("http"):
+                status, html = "0", ""
+            else:
+                status, html = await fetch_one(page, url)
+
+            if _is_block(status, html):
+                # Blocked rows are NOT written — a rerun (after re-warm) retries them.
+                async with lock:
+                    state["blocks"] += 1
+                    state["consec_block"] += 1
+                    state["window"].append(1)
+                    print(f"  [w{wid}] BLOCK status={status} consec={state['consec_block']} "
+                          f"url=...{url[-50:]}", flush=True)
+                    if _detector_trips(state, args) and not state["abort"].is_set():
+                        wn, wl = sum(state["window"]), len(state["window"])
+                        print(f"\n!! BLOCK-DETECTOR TRIPPED — consec={state['consec_block']}, "
+                              f"window={wn}/{wl} ({wn/max(wl,1):.0%} blocks). Aborting all "
+                              f"{args.parallelism} workers NOW to preserve the session/IP. "
+                              f"Re-warm Chrome (open a BW page) and rerun to resume.", flush=True)
+                        state["abort"].set()
+            else:
+                if status == "200" and html:
+                    try:
+                        fields = extract_fields(html)
+                    except Exception as e:  # one bad page must not kill the run
+                        status = "parse_err"
+                        fields = {k: "" for k in EXTRACTED_FIELDS if k != "nav_status"}
+                        print(f"  [w{wid}] PARSE-ERR url=...{url[-50:]}: "
+                              f"{type(e).__name__}: {e}", flush=True)
+                else:
+                    fields = {k: "" for k in EXTRACTED_FIELDS if k != "nav_status"}
+                fields["nav_status"] = status
+                async with lock:
+                    state["consec_block"] = 0
+                    state["window"].append(0)
+                    fh, w = writer_for(row)
+                    w.writerow(_clean_row({**row, **fields}))
+                    fh.flush()   # durable per row — flush is cheap vs the browser fetch
+                    state["written"] += 1
+                    if status != "200":
+                        state["errors"] += 1
+                        print(f"  [w{wid}] ERR nav={status} {state['written']}/{state['total']} "
+                              f"url=...{url[-50:]}", flush=True)
+                    elif state["written"] % 25 == 0:
+                        rate = state["written"] / max(time.time() - state["t0"], 1)
+                        print(f"  written={state['written']}/{state['total']} "
+                              f"({rate:.2f}/s, {state['blocks']} blk, {state['errors']} err)",
+                              flush=True)
+            await asyncio.sleep(random.uniform(args.delay_min, args.delay_max))
+        finally:
+            queue.task_done()
+
+
 async def main_async(args):
     if not os.path.exists(args.input):
         print(f"missing input: {args.input}")
@@ -275,8 +367,21 @@ async def main_async(args):
         print(f"Could not start/find Chrome on CDP port {args.debug_port}: {e}")
         sys.exit(1)
 
-    written = errors = consec_block = 0
-    t0 = time.time()
+    state = {
+        "written": 0, "errors": 0, "blocks": 0, "consec_block": 0,
+        "window": deque(maxlen=args.block_window),
+        "abort": asyncio.Event(),
+        "total": len(todo), "t0": time.time(),
+    }
+    lock = asyncio.Lock()
+    queue: asyncio.Queue = asyncio.Queue()
+    for row in todo:
+        await queue.put(row)
+    for _ in range(args.parallelism):
+        await queue.put(None)
+    print(f"parallelism={args.parallelism}  detector: abort on {args.block_abort} "
+          f"consecutive OR >={args.block_rate:.0%} of last {args.block_window}", flush=True)
+
     async with async_playwright() as p:
         try:
             browser = await p.chromium.connect_over_cdp(f"http://127.0.0.1:{args.debug_port}")
@@ -285,61 +390,26 @@ async def main_async(args):
             sys.exit(1)
         ctx = browser.contexts[0] if browser.contexts else await browser.new_context()
         await bws._cleanup_existing_pages(ctx, launched)
-        page = await ctx.new_page()
-
-        for row in todo:
-            url = row["url"]
-            if not url.startswith("http"):
-                status, html = "0", ""
-            else:
-                status, html = await fetch_one(page, url)
-
-            # A block is SESSION state, not a property of the URL: don't write the
-            # row, so a rerun retries it after re-warming. Counts toward the abort.
-            if status == "blocked":
-                consec_block += 1
-                print(f"  BLOCKED ({consec_block}) url=...{url[-55:]}", flush=True)
-                if consec_block >= args.block_abort:
-                    print(f"\n{consec_block} consecutive blocks — Akamai flagged the "
-                          f"session. Stopping to preserve cookies. Re-warm Chrome "
-                          f"(visit a BW page manually) and rerun to resume.")
-                    break
-                continue
-            consec_block = 0
-
-            if status == "200" and html:
-                try:
-                    fields = extract_fields(html)
-                except Exception as e:  # one bad page must not kill a 10-day run
-                    status = "parse_err"
-                    fields = {k: "" for k in EXTRACTED_FIELDS if k != "nav_status"}
-                    print(f"  PARSE-ERR url=...{url[-55:]}: {type(e).__name__}: {e}",
-                          flush=True)
-            else:
-                fields = {k: "" for k in EXTRACTED_FIELDS if k != "nav_status"}
-            fields["nav_status"] = status
-
-            fh, w = writer_for(row)
-            w.writerow(_clean_row({**row, **fields}))
-            written += 1
-            if status != "200":                     # log EVERY failure, not every 5th
-                errors += 1
-                fh.flush()
-                print(f"  ERR nav={status} {written}/{len(todo)} url=...{url[-55:]}",
-                      flush=True)
-            elif written % 5 == 0:
-                fh.flush()
-                print(f"  written={written}/{len(todo)} last=200 url=...{url[-55:]}",
-                      flush=True)
-            await asyncio.sleep(random.uniform(args.delay_min, args.delay_max))
-
-        await page.close()
+        pages = [await ctx.new_page() for _ in range(args.parallelism)]
+        tasks = [asyncio.create_task(
+                    worker(i, queue, pages[i], writer_for, lock, args, state))
+                 for i in range(args.parallelism)]
+        await asyncio.gather(*tasks)
+        for pg in pages:
+            try:
+                await pg.close()
+            except Exception:
+                pass
 
     for fh, _ in writers.values():
         fh.close()
-    elapsed = time.time() - t0
-    print(f"\ndone. wrote {written} rows ({errors} errors) in {elapsed:.1f}s "
-          f"({written/max(elapsed,1):.2f} rows/s)")
+    elapsed = time.time() - state["t0"]
+    tag = "ABORTED by block-detector" if state["abort"].is_set() else "done"
+    print(f"\n{tag}. wrote {state['written']} rows "
+          f"({state['errors']} errors, {state['blocks']} blocks) in {elapsed:.1f}s "
+          f"({state['written']/max(elapsed,1):.2f} rows/s)")
+    if state["abort"].is_set():
+        sys.exit(2)
 
 
 def main():
@@ -352,8 +422,14 @@ def main():
     p.add_argument("--limit", type=int, default=None, help="fetch first N (testing)")
     p.add_argument("--delay-min", type=float, default=1.5)
     p.add_argument("--delay-max", type=float, default=4.0)
+    p.add_argument("--parallelism", type=int, default=3,
+                   help="concurrent tabs (1 = safest single-tab; >1 faster but more block-prone)")
     p.add_argument("--block-abort", type=int, default=3,
-                   help="stop after this many consecutive Akamai blocks")
+                   help="abort all workers after this many consecutive blocks")
+    p.add_argument("--block-window", type=int, default=25,
+                   help="rolling window of recent requests for block-rate detection")
+    p.add_argument("--block-rate", type=float, default=0.2,
+                   help="abort if blocks reach this fraction of --block-window")
     p.add_argument("--debug-port", type=int, default=DEBUG_PORT)
     p.add_argument("--chrome-profile", default=PROFILE)
     p.add_argument("--chrome-exe", default=None)
