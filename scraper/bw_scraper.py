@@ -394,6 +394,13 @@ def ensure_chrome(debug_port: int, profile_dir: str, chrome_exe: str | None,
         exe,
         f"--remote-debugging-port={debug_port}",
         f"--user-data-dir={profile_dir}",
+        # Stop Chrome throttling non-foreground tabs — without these, only the
+        # focused tab loads at full speed and parallel workers stall (the
+        # globe-in-spinner). Lets N tabs actually load concurrently.
+        "--disable-renderer-backgrounding",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-features=CalculateNativeWinOcclusion",
     ]
     print(f"  launching Chrome: {exe}")
     print(f"  profile: {profile_dir}   debug port: {debug_port}")
