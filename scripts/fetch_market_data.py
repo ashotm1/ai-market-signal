@@ -289,6 +289,202 @@ def _flatten_details(ticker: str, date_str: str, d: dict) -> dict:
     }
 
 
+# ── BW (BusinessWire signal-filtered) source ───────────────────────────────────
+# Input already has datetime/ticker — no CIK resolution. Baseline = the 1-min bar
+# just before the news minute ("1 min before the news time"). Forward returns:
+# 5m/1h from intraday 1-min bars; 1d/5d from the Nth forward trading-day close.
+
+BW_INPUT_CSV  = "data/bw_signal_filtered.csv"
+BW_OUTPUT_CSV = "data/prices/bw_price_data.csv"
+
+_BW_INTRADAY_MS   = {"5m": 5 * 60 * 1000, "1h": 60 * 60 * 1000}  # offset from t0
+_BW_DAILY_TD      = {"1d": 1, "5d": 5}                            # forward trading days
+_BW_CHANGE_LABELS = ["5m", "1h", "1d", "5d"]
+
+
+async def fetch_daily_bars_forward(client: httpx.AsyncClient, ticker: str, date_str: str,
+                                   cal_days: int = 16) -> list:
+    """Daily bars for the window AFTER date_str (calendar span covers +1d..+5d trading days)."""
+    base  = datetime.strptime(date_str, "%Y-%m-%d")
+    start = (base + timedelta(days=1)).strftime("%Y-%m-%d")
+    end   = (base + timedelta(days=cal_days)).strftime("%Y-%m-%d")
+    url = (
+        f"{POLYGON_BASE}/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+        f"?adjusted=true&sort=asc&limit=60&apiKey={MASSIVE_API_KEY}"
+    )
+    try:
+        r = await client.get(url, timeout=30)
+        if r.status_code == 200:
+            return r.json().get("results", [])
+    except Exception:
+        return _FETCH_ERROR
+    return _FETCH_ERROR
+
+
+def compute_changes_bw(bars: list, daily_fwd: list, acceptance_dt: str | None,
+                       daily_back: list | None = None) -> dict:
+    """Baseline (bar before news) + forward returns: 5m/1h intraday, 1d/5d daily closes."""
+    result = {"price_t0": None, **{f"change_{l}_pct": None for l in _BW_CHANGE_LABELS}}
+    if not acceptance_dt:
+        return result
+    try:
+        dt = datetime.fromisoformat(acceptance_dt.replace("Z", "+00:00"))
+    except ValueError:
+        return result
+    t0_ms = int(dt.timestamp() * 1000)
+
+    p0 = None
+    if bars:
+        pre = _bar_before(bars, t0_ms)              # bar just before the news minute
+        if pre is not None:
+            p0 = pre["c"]
+    if p0 is None and daily_back:
+        p0 = daily_back[-1]["c"]                     # pre/after-hours fallback: prior close
+    if p0 is None:
+        return result
+    result["price_t0"] = p0
+
+    if bars:
+        for label, off in _BW_INTRADAY_MS.items():
+            bar = _bar_at_or_after(bars, t0_ms + off)
+            if bar:
+                result[f"change_{label}_pct"] = round((bar["c"] - p0) / p0 * 100, 4)
+    if daily_fwd:
+        for label, td in _BW_DAILY_TD.items():
+            if len(daily_fwd) >= td:
+                c = daily_fwd[td - 1]["c"]           # td-th trading day after the news
+                result[f"change_{label}_pct"] = round((c - p0) / p0 * 100, 4)
+    return result
+
+
+def _normalize_bw_dt(dt_str) -> str | None:
+    """bw datetime 'YYYY-MM-DD HH:MM' (ET) -> ISO with UTC offset."""
+    try:
+        return datetime.strptime(str(dt_str).strip(), "%Y-%m-%d %H:%M").replace(tzinfo=_ET).isoformat()
+    except Exception:
+        return None
+
+
+def load_bw() -> pd.DataFrame:
+    df = pd.read_csv(BW_INPUT_CSV)
+    df["acceptance_dt"] = df["datetime"].apply(_normalize_bw_dt)
+    df["date_str"]      = df["datetime"].apply(lambda s: str(s).split()[0] if pd.notna(s) else None)
+    return df
+
+
+_BW_OUT_COLS = ["datetime", "ticker", "exchange", "title", "url", "date_str",
+                "market_cap", "price_t0",
+                *[f"change_{l}_pct" for l in _BW_CHANGE_LABELS], "fetch_status"]
+
+
+def _bw_row(row, changes: dict | None, mc, status: str) -> dict:
+    ch = changes or {}
+    return {
+        "datetime": row["datetime"], "ticker": row["ticker"], "exchange": row.get("exchange"),
+        "title": row["title"], "url": row["url"], "date_str": row["date_str"],
+        "market_cap": mc, "price_t0": ch.get("price_t0"),
+        **{f"change_{l}_pct": ch.get(f"change_{l}_pct") for l in _BW_CHANGE_LABELS},
+        "fetch_status": status,
+    }
+
+
+async def run_bw(limit: int | None = None):
+    if not MASSIVE_API_KEY:
+        raise RuntimeError("Missing API key. Set MASSIVE_API_KEY or POLYGON_API_KEY.")
+    os.makedirs(os.path.dirname(BW_OUTPUT_CSV), exist_ok=True)
+
+    df = load_bw()
+    print(f"Loaded {len(df)} rows from {BW_INPUT_CSV}")
+    # +5d forward window needs the news ~5 trading days in the past
+    cutoff = (pd.Timestamp.today() - 7 * pd.tseries.offsets.BDay()).strftime("%Y-%m-%d")
+    df = df[df["date_str"].notna() & (df["date_str"] <= cutoff)]
+    df = df[df["ticker"].notna() & (df["ticker"].astype(str) != "")].reset_index(drop=True)
+    print(f"  {len(df)} rows after cutoff {cutoff} + ticker present")
+
+    fetched: set = set()
+    if os.path.exists(BW_OUTPUT_CSV):
+        _ex = pd.read_csv(BW_OUTPUT_CSV, usecols=["ticker", "date_str"], on_bad_lines="skip")
+        fetched = set(zip(_ex["ticker"], _ex["date_str"]))
+        print(f"  {len(fetched)} (ticker, date_str) already done — skipping")
+
+    groups: dict = {}
+    for _, row in df.iterrows():
+        key = (row["ticker"], row["date_str"])
+        if key not in fetched:
+            groups.setdefault(key, []).append(row)
+    pairs = list(groups.items())
+    if limit:
+        pairs = pairs[:limit]
+    print(f"  {len(pairs)} (ticker, date_str) pairs to fetch\n")
+
+    buf: list = []
+    total = {"n": 0}
+    api   = {"n": 0}
+    write_header = not os.path.exists(BW_OUTPUT_CSV) or os.path.getsize(BW_OUTPUT_CSV) == 0
+
+    def _flush():
+        nonlocal write_header
+        if buf:
+            pd.DataFrame(buf, columns=_BW_OUT_COLS).to_csv(
+                BW_OUTPUT_CSV, mode="a", header=write_header, index=False)
+            write_header = False
+            total["n"] += len(buf)
+            buf.clear()
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
+
+    async def _proc(client, ticker, date_str, rows):
+        async with sem:
+            # details-first: 1 call to gate on market cap before the 3 bar calls
+            # (the bw archive is large-cap-heavy and most pairs get skipped here)
+            details = await fetch_ticker_details(client, ticker, date_str)
+            api["n"] += 1
+            if details is _FETCH_ERROR:
+                return [_bw_row(r, None, None, "error_details") for r in rows]
+            if not details:
+                return [_bw_row(r, None, None, "skip_no_details") for r in rows]
+            mc = details.get("market_cap")
+            if mc and mc > 500_000_000:
+                return [_bw_row(r, None, mc, f"skip_mktcap_{mc/1e6:.0f}M") for r in rows]
+            try:
+                bars, dback, dfwd = await asyncio.gather(
+                    fetch_1min_bars(client, ticker, date_str),
+                    fetch_daily_bars(client, ticker, date_str),
+                    fetch_daily_bars_forward(client, ticker, date_str),
+                )
+            except Exception as exc:
+                return [_bw_row(r, None, mc, f"error_{type(exc).__name__}") for r in rows]
+            api["n"] += 3
+
+        bars_l  = bars  if isinstance(bars,  list) else []
+        dback_l = dback if isinstance(dback, list) else []
+        dfwd_l  = dfwd  if isinstance(dfwd,  list) else []
+        base_status = "ok" if bars_l else ("ok_daily_only" if dfwd_l else "skip_no_data")
+        out = []
+        for r in rows:
+            ch = compute_changes_bw(bars_l, dfwd_l, r.get("acceptance_dt"), daily_back=dback_l or None)
+            st = base_status if ch.get("price_t0") is not None else "skip_no_price"
+            out.append(_bw_row(r, ch, mc, st))
+        return out
+
+    async def _go(client, ticker, date_str, rows):
+        res = await _proc(client, ticker, date_str, rows)
+        buf.extend(res)
+        _flush()
+        print(f"  {str(ticker):6} {date_str}  {res[0]['fetch_status']}", flush=True)
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await asyncio.gather(*[_go(client, t, d, rows) for (t, d), rows in pairs])
+    except (KeyboardInterrupt, Exception) as exc:
+        print(f"\nInterrupted ({type(exc).__name__}) — saving...", flush=True)
+        _flush()
+        _repair_csv(BW_OUTPUT_CSV)
+
+    _flush()
+    print(f"\nDone. API calls: {api['n']}. {total['n']} rows -> {BW_OUTPUT_CSV}")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = False, refetch: bool = False, rewrite: bool = False, _shared_cleared: set | None = None):
@@ -566,8 +762,10 @@ async def fetch_ticker_universe():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", choices=["edgar", "stocktitan", "all"], default="edgar",
+    parser.add_argument("--source", choices=["edgar", "stocktitan", "bw", "all"], default="edgar",
                         help="input source — 'all' runs edgar then stocktitan (default: edgar)")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="bw only: fetch at most N (ticker, date) pairs (for testing)")
     parser.add_argument("--catalyst", metavar="NAME",
                         help="EDGAR only: filter by catalyst tag (e.g. crypto_treasury)")
     parser.add_argument("--sig", action="store_true",
@@ -583,6 +781,8 @@ def main():
     async def _main():
         if args.ticker_universe:
             await fetch_ticker_universe()
+        elif args.source == "bw":
+            await run_bw(limit=args.limit)
         elif args.rewrite_all:
             cleared: set = set()
             await run(source="edgar",      catalyst=args.catalyst, sig=args.sig, rewrite=True, _shared_cleared=cleared)
