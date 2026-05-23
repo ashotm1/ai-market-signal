@@ -15,6 +15,8 @@ import csv
 import re
 import sys
 
+from pr_detection import classify_catalyst
+
 csv.field_size_limit(10**7)
 
 NEWS = "data/bw_news.csv"
@@ -60,7 +62,7 @@ def main():
         cols = rd.fieldnames
         rows = list(rd)
 
-    kept, no_ticker, spam = [], 0, []
+    kept, no_ticker, spam, no_signal = [], 0, [], []
     for r in rows:
         if (r.get("ticker") or "").strip().upper() not in uni:
             no_ticker += 1
@@ -68,7 +70,16 @@ def main():
         if is_spam(r.get("title", "")):
             spam.append(r)
             continue
-        kept.append(r)
+        # not a desirable implementation, pr detection needs to return signal vs non signal, maybe in new function
+        signal_catalysts = ["other", "biotech", "private_placement", "m&a", "crypto_treasury", "contract", "new product", "collaboration"]
+        signal = False
+        for cat in classify_catalyst(r.get("title", "")):
+            if cat in signal_catalysts:
+                kept.append(r)
+                signal = True
+                break 
+        if not signal:
+            no_signal.append(r)
 
     with open(OUT, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
@@ -78,6 +89,7 @@ def main():
     print(f"total bw_news rows : {len(rows):,}")
     print(f"  dropped no/!uni ticker : {no_ticker:,}")
     print(f"  dropped law-firm spam  : {len(spam):,}")
+    print(f"  dropped no-signal     : {len(no_signal):,}")
     print(f"  KEPT (-> {OUT}) : {len(kept):,}")
     print(f"\nspam as % of ticker-matched: {len(spam)/max(len(spam)+len(kept),1):.1%}")
     print("\n--- 20 sample EXCLUDED (spam) titles ---")
