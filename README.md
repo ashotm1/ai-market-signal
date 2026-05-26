@@ -52,7 +52,12 @@ The primary data sources are the newswire websites. Each website has its own ded
 
 ## Feature extraction
 
-[extract_features.py](scripts/extract_features.py) is the ML input stage: it turns a press-release body into a ~15-field LLM feature schema (Sonnet, batch or real-time) → `data/*_features.csv`. The schema covers dollar amount, commitment, specificity, hype, dilution, named partners, milestone guidance, restatement, and free-text green/red flags. Its input is the extracted article bodies from the newswire sources above.
+The ML input stage turns each press-release body into typed, structured features via a **per-category schema registry** — every catalyst type has its own schema, so a private placement and a clinical readout extract different facts.
+
+- `features/schemas/` — the registry (private repo). `base.py` defines the schema primitives; one module per catalyst declares its fields (types, enums, extraction rules). `private_placement.py` is the first. Adding a category is a new module + `register()` — the runner doesn't change.
+- [features/runner.py](features/runner.py) — the runner (`python -m features.runner --category private_placement --run`). Filters bodies to one category and sends **one body per request** through the Anthropic Batch API (full attention per document), writing one wide, namespaced row per release to `data/features_<category>.csv`.
+
+The schema extracts **facts, not judgments**: every field is nullable and "not stated" → null (the prompt forbids guessing — a wrong number is worse than null). Scoring and weighting are deliberately left to the downstream ML model, learned from price outcomes rather than asked of the LLM.
 
 Catalyst tagging itself is a shared, source-agnostic regex gate (`classify_catalyst` in [regex/catalysts.py](regex/catalysts.py)) applied on the title before the expensive body fetch — tuned for recall (a missed catalyst is a permanent drop; a false positive is cheap and caught downstream).
 
