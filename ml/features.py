@@ -177,7 +177,14 @@ def _generic(df: pd.DataFrame, schema) -> pd.DataFrame:
 def engineer(df: pd.DataFrame, schema) -> pd.DataFrame:
     f = _generic(df, schema)
     if schema.deriver is not None:
-        f = pd.concat([f, schema.deriver(df, schema)], axis=1)
+        d = schema.deriver(df, schema)
+        clash = set(f.columns) & set(d.columns)
+        if clash:
+            raise ValueError(
+                f"{schema.category} deriver emits f_ columns that collide with the "
+                f"generic encoder: {sorted(clash)} — rename the deriver outputs."
+            )
+        f = pd.concat([f, d], axis=1)
     return f
 
 
