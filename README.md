@@ -20,7 +20,7 @@ The repo is a Python package run from the root with `python -m <package.module>`
 | `regex/` | Shared regex — `catalysts.py` (the catalyst recall gate) |
 | `features/` | Pre-ML feature extraction — `runner.py` + `schemas/` registry |
 | `market/` | Polygon price/market-data fetch |
-| `ml/` | Training stage (designed, empty) |
+| `ml/` | ML table builder (`ml/features.py` — market join + economic ratios + labels); model training not yet built |
 | `analysis/` | One-off eval / inspection / cleanup scripts |
 | `ui_legacy/` | The old sentiment demo, self-contained |
 | `sec/pipeline.py` | Orchestrates the SEC ingest steps |
