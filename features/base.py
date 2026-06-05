@@ -73,7 +73,14 @@ class FeatureSchema:
     intro: str              # one-line description of the event type, for the prompt
     fields: list            # list[FieldSpec]
     examples: list = field(default_factory=list)  # optional (body, dict) few-shot pairs
-    deriver: Optional[object] = None  # optional callable(df, schema) -> DataFrame of f_ cols
+    deriver: Optional[object] = None
+    # Optional callable(df: DataFrame, schema: FeatureSchema) -> DataFrame of f_* cols.
+    # Called by ml/features.engineer() after the generic encoder. Must emit only NEW
+    # f_* column names (a collision guard asserts disjoint sets).
+    # Ambient columns injected by ml/features.build() and available in df:
+    #   market_cap_asof, shares_out_asof, mktcap_gap_days, mktcap_fresh  (A4 JOIN)
+    #   price_t0                                                           (A4 LABEL, NaN if no bars)
+    #   date_str, dt                                                       (event date/datetime)
 
     # --- column names -------------------------------------------------------
     def column_names(self) -> list:
