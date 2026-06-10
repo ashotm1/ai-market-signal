@@ -1,16 +1,14 @@
-# News Signal
+# Small Cap Signal
 
-Event-driven trading signal pipeline for small-cap stocks. Scrapes catalyst press releases from the major newswires, extracts structured features from each release via LLM, pairs them with intraday price reactions, and feeds an ML model that predicts continuation/reversal at decision time.
+Event-driven stock price prediction pipeline for small-cap stocks. Scrapes catalyst press releases from the major newswires, extracts structured features with LLM, and combines them with intraday price data to predict price continuation or reversal.
 
-Scope is non-earnings catalysts — M&A, biotech, crypto treasury, collaborations, contracts, product launches, private placements.
-
-Status: Newswire scraping + body-extraction running across GlobeNewswire, PRNewswire, ACCESS Newswire, and Business Wire; LLM feature extraction working. ML training stage designed, not yet built.
+Scope: M&A, biotech, crypto treasury, collaborations, contracts, product launches, private placements.
 
 ---
 
 ## Repository layout
 
-The repo is a Python package run from the root with `python -m <package.module>` (imports are absolute, e.g. `from regex.catalysts import classify_catalyst`).
+Run from the root with `python -m <package.module>`
 
 | Package | Role |
 |---|---|
@@ -22,37 +20,30 @@ The repo is a Python package run from the root with `python -m <package.module>`
 | `market/` | Polygon price/market-data fetch |
 | `ml/` | ML table builder (`ml/features.py` — market join + economic ratios + labels); model training not yet built |
 | `analysis/` | One-off eval / inspection / cleanup scripts |
-| `ui_legacy/` | The old sentiment demo, self-contained |
-| `sec/pipeline.py` | Orchestrates the SEC ingest steps |
 
 ---
 
 ## Newswire sources
 
-The primary data sources are the newswire websites. Each website has its own dedicated scraper, because the data extraction implementation is website specific. 
+**scrape headlines/URLs → classify/filter → fetch article body**
 
-**scrape headlines/URLs → classify/filter to the tradeable universe → fetch the article page for the full body + structured fields** — every stage append-safe (skips already-done URLs). The extracted news article bodies are the input to feature extraction (below).
-
-| Source | Scrape → list | Filter to signal | Body extractor → output |
+| Source | Scrape → list | Filter | Body extractor |
 |---|---|---|---|
 | GlobeNewswire | `ingest/gnw_scraper.py` → `gnw_news.csv` | `sources/gnw/gnw_classifier.py` → `gnw_signal_filter.py` | `sources/gnw/gnw_extract_fields.py` → `gnw_signal_articles.csv` |
 | PRNewswire | `ingest/prn_scraper.py` → `data/prn_data/` | `sources/prnw/prn_classifier.py` (ticker ∈ universe) | `sources/prnw/prn_extract_fields.py` → `data/prn_articles/` |
 | ACCESS Newswire | `ingest/anw_scraper.py` → `data/anw/` | post-hoc (full-run, then filter) | `sources/anw/anw_extract_fields.py` → `data/anw_articles/` |
 | Business Wire | `ingest/bw_scraper.py` → `bw_news.csv` | `sources/bw/bw_signal_filter.py` | `sources/bw/bw_extract_fields.py` → `data/bw_articles/` |
 
-(The `prnw` directory is PR Newswire — spelled `prnw` because `prn` is a reserved device name on Windows.)
 
-**Body extraction** (`sources/*/*_extract_fields.py`) fetches each PR page and pulls JSON-LD / `og:` metadata plus the full article body into namespaced `<src>_*` columns. Most sources use plain `httpx`; 
+Body extraction fetches each PR page and pulls the full article body. Most sources use plain `httpx`; Business Wire is behind Akamai Bot Manager so its scraper drives a real warmed Chrome over CDP instead.
 
-**Business Wire is behind Akamai Bot Manager**, so its scraper and extractor drive a real warmed Chrome over CDP instead (a parallel tab pool with a block-detector that aborts before a session block escalates to an IP ban). Where the ticker is known before fetch (BW, PRN) the set is filtered first and only the universe subset is fetched; ACCESS Newswire has no pre-fetch ticker (truncated slugs) so it fetches the full archive and filters on the extracted ticker.
-
-**Filtering** keeps rows whose ticker is in [data/ticker_universe.csv](data/ticker_universe.csv) and drops law-firm / class-action litigation releases (deadline & investor alerts, "*\<firm\> investigates*") — they carry the target company's ticker but aren't signal events. The catalyst signals are also filtered. If the title has clear catalyst (not "other") returned by regex classifier, and its one of the signal catalysts that are key to these project we only keep those rows.
+Filtering keeps rows whose ticker is in [data/ticker_universe.csv](data/ticker_universe.csv), drops law-firm / class-action litigation releases, and keeps only signal catalyst types.
 
 ---
 
 ## Feature extraction
 
-The ML input stage turns each press-release body into typed, structured features via a **per-category schema registry** — every catalyst type has its own schema, so a private placement and a clinical readout extract different facts.
+The ML input stage turns each press-release body into typed, structured features via a **per-category schema registry** — every catalyst type has its own schema, so a private placement and a clinical readout extract different data.
 
 - [features/base.py](features/base.py) — public engine: `FeatureSchema`/`FieldSpec` dataclasses, JSON-schema + system-prompt rendering, `register`/`get_schema` registry; `deriver` — optional per-category callable injected into the ML table builder.
 - `features/schemas/` — private repo (gitignored). One module per catalyst declares its fields (types, enums, extraction rules); `private_placement.py` is the first. Adding a category is a new module + `register()` — the runner doesn't change.
@@ -76,7 +67,7 @@ Flow: [sec/download_idx.py](sec/download_idx.py) + [sec/parse_idx.py](sec/parse_
 
 ---
 
-## ML target (design)
+## ML
 
 - Scope: <$500M point-in-time market cap, signal catalyst, price up >=10% within first 5m of news
 - Decision time `t` = the moment the stock crosses +10%, not news time
@@ -88,16 +79,9 @@ Layer 1 hard filters (no model): drop dilutive offerings, restatements, excluded
 
 ---
 
-## Sentiment UI *(demo front end)*
-
-Original headline-sentiment demo from before the project pivoted. FinBERT / GPT-4o Mini / Claude Haiku scored on titles. Lives entirely under [ui_legacy/](ui_legacy/) (`ai_sentiment/`, `api/`, `static/`, `template/`, `finbert_service/`) — run `python -m ui_legacy.api.main`, separate from the main pipeline.
-
----
-
 ## Requirements
 
+- `MASSIVE_API_KEY` — Polygon.io price data
 - `ANTHROPIC_API_KEY` — LLM classification + feature extraction
-- `MASSIVE_API_KEY` or `POLYGON_API_KEY` — Polygon.io price data (Starter+ / unlimited tier; the market-data fetcher runs concurrent requests and assumes no rate limit)
-- `SEC_USER_AGENT` — SEC EDGAR fair-access policy (e.g. `"Name email@example.com"`)
-- `OPENAI_API_KEY` — only if using GPT model in the legacy UI
+- `SEC_USER_AGENT` — SEC EDGAR fair-access (e.g. `"Name email@example.com"`)
 - Business Wire extraction needs a real Chrome (CDP) — see [ingest/bw_scraper.py](ingest/bw_scraper.py) for the warmed-profile setup
