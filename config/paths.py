@@ -54,11 +54,14 @@ ST_SIGNAL = f"{ST_DIR}/stocktitan_news_filtered.csv"
 
 # ── Prices ────────────────────────────────────────────────────────────────────
 PRICES_DIR     = f"{DATA}/prices"
-PRICES_SEC     = f"{PRICES_DIR}/sec_price_data.csv"
-PRICES_BW      = f"{PRICES_DIR}/bw_price_data.csv"
-PRICES_ST      = f"{PRICES_DIR}/st_price_data.csv"
-PRICE_BARS     = f"{PRICES_DIR}/price_bars.csv"
-DAILY_BARS     = f"{PRICES_DIR}/daily_bars.csv"
+PRICES_SEC     = f"{PRICES_DIR}/sec_price_data.csv"   # legacy
+PRICES_BW      = f"{PRICES_DIR}/bw_price_data.csv"    # legacy
+PRICES_ST      = f"{PRICES_DIR}/st_price_data.csv"    # legacy
+PRICE_BARS     = f"{PRICES_DIR}/price_bars.csv"        # legacy
+DAILY_BARS     = f"{PRICES_DIR}/daily_bars.csv"        # legacy
+BARS_1MIN      = f"{PRICES_DIR}/1min_bars.csv"
+BARS_10MIN     = f"{PRICES_DIR}/10min_bars.csv"
+BARS_DAILY_NW  = f"{PRICES_DIR}/daily_bars_nw.csv"
 TICKER_DETAILS = f"{PRICES_DIR}/ticker_details.csv"
 
 # ── Shared reference data ─────────────────────────────────────────────────────
