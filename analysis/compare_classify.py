@@ -27,9 +27,10 @@ import pandas as pd
 from anthropic import Anthropic
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-CLASSIFIED_CSV  = "data/ex_99_classified.csv"
-SAMPLE_CSV      = "data/compare_sample.csv"
-RESULTS_CSV     = "data/compare_results.csv"
+from config.paths import SEC_CLASSIFIED, COMPARE_SAMPLE, COMPARE_RESULTS
+CLASSIFIED_CSV  = SEC_CLASSIFIED
+SAMPLE_CSV      = COMPARE_SAMPLE
+RESULTS_CSV     = COMPARE_RESULTS
 STATE_DIR       = "data"
 SAMPLE_SIZE     = 200
 MODEL           = "claude-sonnet-4-6"

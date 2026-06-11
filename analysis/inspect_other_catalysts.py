@@ -2,7 +2,8 @@ import pandas as pd, ast, re, sys, io
 from collections import Counter
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
-df = pd.read_csv('data/ex_99_classified.csv')
+from config.paths import SEC_CLASSIFIED
+df = pd.read_csv(SEC_CLASSIFIED)
 pr = df[df['is_pr']==True].copy()
 
 def is_other(val):

@@ -4,9 +4,9 @@ download to PR classification. Steps run as `python -m <module>` from repo root.
 
 Steps (in order):
   1. sec.download_idx          — download daily index files from EDGAR
-  2. sec.parse_idx            — parse index files → data/8k.csv
-  3. sec.batch_filter         — fetch filing index pages → data/8k_ex99.csv
-  4. sec.classify_exhibits    — classify EX-99 exhibits → data/ex_99_classified.csv
+  2. sec.parse_idx            — parse index files → data/sec/8k.csv
+  3. sec.batch_filter         — fetch filing index pages → data/sec/8k_ex99.csv
+  4. sec.classify_exhibits    — classify EX-99 exhibits → data/sec/ex_99_classified.csv
   5. sec.classify_catalyst_llm — (optional --llm) LLM catalyst classify for 'other' rows
   6. market.fetch_market_data — (optional --market) fetch Polygon market data for signal rows
 

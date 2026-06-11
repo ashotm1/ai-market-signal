@@ -4,8 +4,8 @@ gnw_signal_filter.py — select the ML-eligible GNW subset from gnw_classified.c
 Keeps rows where: catalyst includes an author-SIGNAL tag, ticker present,
 datetime >= cutoff (Polygon price-data window).
 
-Input:  data/gnw_classified.csv  (datetime, source, url, title, ticker, exchange, catalyst)
-Output: data/gnw_signal_filtered.csv  (same cols + signal_tags)
+Input:  data/gnw/gnw_classified.csv  (datetime, source, url, title, ticker, exchange, catalyst)
+Output: data/gnw/gnw_signal_filtered.csv  (same cols + signal_tags)
 
 Usage:
   python scripts/gnw_signal_filter.py
@@ -16,8 +16,9 @@ import ast
 import csv
 from collections import Counter
 
-INPUT_CSV  = "data/gnw_classified.csv"
-OUTPUT_CSV = "data/gnw_signal_filtered.csv"
+from config.paths import GNW_CLASSIFIED, GNW_SIGNAL, GNW_DIR, ensure_dirs
+INPUT_CSV  = GNW_CLASSIFIED
+OUTPUT_CSV = GNW_SIGNAL
 
 # Author-defined SIGNAL catalyst tags (pr_detection.py).
 SIGNAL = {"biotech", "private_placement", "collaboration", "m&a",
@@ -25,6 +26,7 @@ SIGNAL = {"biotech", "private_placement", "collaboration", "m&a",
 
 
 def main():
+    ensure_dirs()
     p = argparse.ArgumentParser()
     p.add_argument("--cutoff", default="2021-05-19", help="min datetime (YYYY-MM-DD)")
     args = p.parse_args()

@@ -24,7 +24,8 @@ from datetime import date, datetime, timedelta
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
-OUTPUT_CSV = "data/gnw_news.csv"
+from config.paths import GNW_NEWS, ensure_dirs
+OUTPUT_CSV = GNW_NEWS
 BASE_URL   = "https://www.globenewswire.com"
 DELAY      = 2
 
@@ -214,6 +215,7 @@ def date_range(start: date, end: date):
 
 
 def main():
+    ensure_dirs()
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=30)

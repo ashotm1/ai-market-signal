@@ -3,7 +3,7 @@ classify_catalyst_llm.py — LLM catalyst classification for unclassified press 
 
 For rows where is_pr=True and catalyst=['other'], fetches the first ~150 words
 of the EX-99 content and uses Claude Sonnet (batch API) to classify the catalyst.
-Updates the catalyst column in-place in data/ex_99_classified.csv.
+Updates the catalyst column in-place in data/sec/ex_99_classified.csv.
 
 Usage:
   python scripts/classify_catalyst_llm.py --submit-batch   # fetch snippets, submit batch job
@@ -25,8 +25,9 @@ from anthropic import Anthropic
 from sec.edgar import fetch_html
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-INPUT_CSV        = "data/ex_99_classified.csv"
-BATCH_STATE_FILE = "data/llm_classifier_batch.json"
+from config.paths import SEC_CLASSIFIED, LLM_BATCH_STATE, LLM_MALFORMED, SEC_DIR, ensure_dirs
+INPUT_CSV        = SEC_CLASSIFIED
+BATCH_STATE_FILE = LLM_BATCH_STATE
 BATCH_SIZE       = 10
 BATCH_INTERVAL   = 1.0
 LLM_INTERVAL     = 1.2
@@ -77,7 +78,7 @@ def _extract_snippet(html: str, max_words: int = SNIPPET_WORDS) -> str:
     return " ".join(words[:max_words])
 
 
-MALFORMED_CSV = "data/llm_malformed.csv"
+MALFORMED_CSV = LLM_MALFORMED
 
 def _parse_tag(raw: str, url: str = "") -> str:
     tag = raw.strip().lower().rstrip(".")

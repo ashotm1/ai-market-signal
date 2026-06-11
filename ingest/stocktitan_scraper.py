@@ -2,7 +2,7 @@
 stocktitan_scraper.py — Scrape StockTitan news by date, iterating backwards.
 
 Fetches https://www.stocktitan.net/news/YYYY-MM-DD/ for each date,
-parses all news rows, and appends to data/stocktitan_news.csv.
+parses all news rows, and appends to data/stocktitan/stocktitan_news.csv.
 
 Fields: date, time, datetime, ticker, exchange, title, url, tags, impact_score, sentiment_score
 
@@ -23,7 +23,8 @@ from datetime import date, timedelta
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 
-OUTPUT_CSV = "data/stocktitan_news.csv"
+from config.paths import ST_NEWS, ensure_dirs
+OUTPUT_CSV = ST_NEWS
 BASE_URL   = "https://www.stocktitan.net/news"
 DELAY      = 2.0  # safe floor from probe results
 
@@ -181,6 +182,7 @@ def date_range(start: date, end: date):
 
 
 def main():
+    ensure_dirs()
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=30, help="number of days back from today (default: 30)")
     parser.add_argument("--from", dest="from_date", help="start date YYYY-MM-DD")

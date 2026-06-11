@@ -11,8 +11,9 @@ import sys
 import mplfinance as mpf
 import pandas as pd
 
-BARS_CSV  = "data/prices/price_bars.csv"
-PRICE_DATA = "data/prices/price_data.csv"
+from config.paths import PRICE_BARS, PRICES_SEC
+BARS_CSV  = PRICE_BARS
+PRICE_DATA = PRICES_SEC
 
 
 def main():
@@ -35,7 +36,7 @@ def main():
     bars.index.name = "Date"
     bars = bars.rename(columns={"o": "Open", "h": "High", "l": "Low", "c": "Close", "v": "Volume"})
 
-    # Auto-lookup acceptance_dt from price_data.csv if not overridden
+    # Auto-lookup acceptance_dt from sec_price_data.csv if not overridden
     acceptance_dt = args.acceptance_dt
     if not acceptance_dt:
         try:

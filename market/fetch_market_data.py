@@ -2,13 +2,13 @@
 fetch_market_data.py — Fetch and store raw market data for detected press releases.
 
 Pipeline (EDGAR source):
-  1. Read data/ex_99_classified.csv (is_pr=True rows only)
+  1. Read data/sec/ex_99_classified.csv (is_pr=True rows only)
   2. For each unique CIK: resolve ticker via SEC submissions API
   3. For each unique (ticker, date): 3 concurrent Polygon calls —
        a. Ticker details (market cap, shares, exchange as of that date) → data/ticker_details.csv
        b. 1-min OHLCV bars  → data/price_bars.csv
        c. Daily bars (40 calendar days prior) → data/daily_bars.csv
-  4. PR metadata row → data/price_data.csv (dedup tracker)
+  4. PR metadata row → data/prices/sec_price_data.csv (dedup tracker)
 
 Pipeline (StockTitan source):
   Same Polygon calls, ticker already in CSV — no CIK resolution.
@@ -46,13 +46,16 @@ MASSIVE_API_KEY = os.environ.get("MASSIVE_API_KEY") or os.environ.get("POLYGON_A
 POLYGON_BASE = "https://api.polygon.io"
 MAX_CONCURRENT = 20  # tickers in-flight simultaneously (3 calls each → up to 60 open connections)
 
-EDGAR_INPUT_CSV    = "data/ex_99_classified.csv"
-EDGAR_OUTPUT_CSV   = "data/prices/price_data.csv"
-ST_INPUT_CSV       = "data/stocktitan_news_filtered.csv"
-ST_OUTPUT_CSV      = "data/prices/st_price_data.csv"
-OUTPUT_BARS_CSV    = "data/prices/price_bars.csv"        # shared — raw 1-min OHLCV bars
-OUTPUT_DAILY_CSV   = "data/prices/daily_bars.csv"        # shared — raw daily OHLCV bars
-OUTPUT_DETAILS_CSV = "data/prices/ticker_details.csv"    # shared — dedup key lives here
+from config.paths import (SEC_CLASSIFIED, PRICES_SEC, ST_SIGNAL, PRICES_ST,
+                          PRICE_BARS, DAILY_BARS, TICKER_DETAILS,
+                          BW_SIGNAL, PRICES_BW, TICKER_UNIVERSE, ensure_dirs)
+EDGAR_INPUT_CSV    = SEC_CLASSIFIED
+EDGAR_OUTPUT_CSV   = PRICES_SEC
+ST_INPUT_CSV       = ST_SIGNAL
+ST_OUTPUT_CSV      = PRICES_ST
+OUTPUT_BARS_CSV    = PRICE_BARS             # shared — raw 1-min OHLCV bars
+OUTPUT_DAILY_CSV   = DAILY_BARS             # shared — raw daily OHLCV bars
+OUTPUT_DETAILS_CSV = TICKER_DETAILS         # shared — dedup key lives here
 
 
 def _draft_path(p: str) -> str:
@@ -294,8 +297,8 @@ def _flatten_details(ticker: str, date_str: str, d: dict) -> dict:
 # just before the news minute ("1 min before the news time"). Forward returns:
 # 5m/1h from intraday 1-min bars; 1d/5d from the Nth forward trading-day close.
 
-BW_INPUT_CSV  = "data/bw_signal_filtered.csv"
-BW_OUTPUT_CSV = "data/prices/bw_price_data.csv"
+BW_INPUT_CSV  = BW_SIGNAL
+BW_OUTPUT_CSV = PRICES_BW
 
 _BW_INTRADAY_MS   = {"5m": 5 * 60 * 1000, "1h": 60 * 60 * 1000}  # offset from t0
 _BW_DAILY_TD      = {"1d": 1, "5d": 5}                            # forward trading days
@@ -715,7 +718,7 @@ async def run(source: str = "edgar", catalyst: str | None = None, sig: bool = Fa
         print(f"  {n:>6} rows → {path}")
 
 
-TICKER_UNIVERSE_CSV = "data/ticker_universe.csv"
+TICKER_UNIVERSE_CSV = TICKER_UNIVERSE
 _UNIVERSE_EXCHANGES = ["XNAS", "XNYS", "XASE"]
 # CS = Common Stock (domestic), ADRC = American Depository Receipt Common
 # (foreign companies trading on US exchanges, e.g. BABA, EDU, TAK, NIO, GOL).

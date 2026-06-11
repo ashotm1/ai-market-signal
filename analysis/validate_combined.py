@@ -14,7 +14,8 @@ import pandas as pd
 from sec.edgar import fetch_html
 from sec.pr_detect import classify_llm
 
-INPUT_CSV = "data/ex_99_classified.csv"
+from config.paths import SEC_CLASSIFIED, COMBINED_DISAGREEMENTS
+INPUT_CSV = SEC_CLASSIFIED
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0   # seconds between SEC batches  → 10 req/s
 LLM_INTERVAL = 1.2     # seconds between LLM calls    → 50 RPM
@@ -81,7 +82,7 @@ def main(input_csv=INPUT_CSV):
     print(f"  LLM disagrees:    {disagreed}  ({disagreed/total*100:.1f}%)")
     disagreements = out[~out["llm_is_pr"]]
     if not disagreements.empty:
-        out_path = "data/combined_disagreements.csv"
+        out_path = COMBINED_DISAGREEMENTS
         disagreements.to_csv(out_path, index=False)
         print(f"\n  Disagreements saved to {out_path}")
         for _, row in disagreements.iterrows():

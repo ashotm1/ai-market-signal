@@ -22,8 +22,9 @@ import time
 import urllib.request
 import xml.etree.ElementTree as ET
 
-OUTPUT_DIR  = "data/prn_data"
-DONE_FILE   = "data/prn_data/gz_done.txt"
+from config.paths import PRNW_MONTHLY_DIR, PRNW_MONTHLY_DONE, ensure_dirs
+OUTPUT_DIR  = PRNW_MONTHLY_DIR
+DONE_FILE   = PRNW_MONTHLY_DONE
 GZ_INDEX    = "https://www.prnewswire.com/sitemap-gz.xml"
 DELAY       = 2
 
@@ -190,7 +191,7 @@ def parse_gz(gz_url: str) -> list[dict]:
 
 
 def csv_path(month: str) -> str:
-    return os.path.join(OUTPUT_DIR, f"prn_{month}.csv")
+    return os.path.join(OUTPUT_DIR, f"prnw_{month}.csv")
 
 
 def load_done() -> set[str]:

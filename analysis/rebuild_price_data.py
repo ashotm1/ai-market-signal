@@ -1,16 +1,17 @@
 """
-rebuild_price_data.py — Rebuild price_data.csv from existing bars without any API calls.
+rebuild_price_data.py — Rebuild sec_price_data.csv from existing bars without any API calls.
 
 Reads backup_data.csv (previous price_data snapshot) + price_bars.csv,
-recomputes price change columns using current compute_changes logic, writes price_data.csv.
+recomputes price change columns using current compute_changes logic, writes sec_price_data.csv.
 """
 import pandas as pd
 from market.fetch_market_data import compute_changes, _OFFSETS_MS
 
-BACKUP_CSV = "data/backup_data.csv"
-BARS_CSV   = "data/prices/price_bars.csv"
-DAILY_CSV  = "data/prices/daily_bars.csv"
-OUTPUT_CSV = "data/prices/price_data.csv"
+from config.paths import BACKUP_DATA, PRICE_BARS, DAILY_BARS, PRICES_SEC
+BACKUP_CSV = BACKUP_DATA
+BARS_CSV   = PRICE_BARS
+DAILY_CSV  = DAILY_BARS
+OUTPUT_CSV = PRICES_SEC
 
 
 def main():

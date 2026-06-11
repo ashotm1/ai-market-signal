@@ -1,5 +1,5 @@
 """
-bw_signal_filter.py — build data/bw_signal_filtered.csv from data/bw_news.csv.
+bw_signal_filter.py — build data/bw/bw_signal_filtered.csv from data/bw/bw_news.csv.
 
 Keep a row only if BOTH:
   1. its scraped ticker is in the universe (data/ticker_universe.csv), AND
@@ -18,10 +18,12 @@ import sys
 from regex.catalysts import classify_catalyst
 
 csv.field_size_limit(10**7)
+ensure_dirs()
 
-NEWS = "data/bw_news.csv"
-UNI  = "data/ticker_universe.csv"
-OUT  = "data/bw_signal_filtered.csv"
+from config.paths import BW_NEWS, BW_SIGNAL, TICKER_UNIVERSE, BW_DIR, ensure_dirs
+NEWS = BW_NEWS
+UNI  = TICKER_UNIVERSE
+OUT  = BW_SIGNAL
 
 # Law-firm solicitation markers — high-precision phrases + the major
 # securities-litigation firms (a title carrying any of these is ~never issuer news).

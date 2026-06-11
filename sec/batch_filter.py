@@ -1,7 +1,7 @@
 """
 batch_filter.py — Check which 8-K filings have EX-99 exhibits.
-Reads data/8k.csv, fetches filing index pages, saves rows with EX-99 URLs,
-acceptance_dt, and 8-K item numbers to data/8k_ex99.csv.
+Reads data/sec/8k.csv, fetches filing index pages, saves rows with EX-99 URLs,
+acceptance_dt, and 8-K item numbers to data/sec/8k_ex99.csv.
 
 Rate: BATCH_SIZE=10 per BATCH_INTERVAL=1.0s → exactly 10 req/s.
 Append-safe: skips index URLs already present in the output CSV.
@@ -15,8 +15,9 @@ from sec.edgar import fetch_index, SEC_ARCHIVES
 
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0
-INPUT_CSV = "data/8k.csv"
-OUTPUT_CSV = "data/8k_ex99.csv"
+from config.paths import SEC_8K, SEC_8K_EX99, SEC_DIR, ensure_dirs
+INPUT_CSV = SEC_8K
+OUTPUT_CSV = SEC_8K_EX99
 
 
 async def _process_filing(client, row):
@@ -89,6 +90,7 @@ async def _run(df, fetched_index_urls):
 
 
 def main():
+    ensure_dirs()
     df = pd.read_csv(INPUT_CSV)
     print(f"Loaded {len(df)} 8-K filings", flush=True)
 

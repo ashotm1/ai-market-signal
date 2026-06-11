@@ -18,8 +18,9 @@ import os
 import pandas as pd
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-INPUT_CSV    = "data/ex_99_classified.csv"
-SAMPLE_CSV   = "data/sample_200.csv"
+from config.paths import SEC_CLASSIFIED, SAMPLE_200, SAMPLE_HAIKU, SAMPLE_SONNET
+INPUT_CSV    = SEC_CLASSIFIED
+SAMPLE_CSV   = SAMPLE_200
 PER_BUCKET   = 30
 TOTAL        = 240
 SIGNAL_CATALYSTS = {
@@ -77,8 +78,8 @@ def build_sample() -> pd.DataFrame:
 # ── Comparison ─────────────────────────────────────────────────────────────────
 
 def run_compare():
-    haiku_path  = "data/sample_haiku.csv"
-    sonnet_path = "data/sample_sonnet.csv"
+    haiku_path  = SAMPLE_HAIKU
+    sonnet_path = SAMPLE_SONNET
 
     if not os.path.exists(haiku_path) or not os.path.exists(sonnet_path):
         print("Both sample_haiku.csv and sample_sonnet.csv must exist. Run --model haiku and --model sonnet first.")

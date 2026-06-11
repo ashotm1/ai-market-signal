@@ -44,11 +44,12 @@ from market.fetch_market_data import compute_changes, _OFFSETS_MS
 
 _ET = "America/New_York"
 
-FEATURES_CSV = "data/features_{cat}.csv"
-OUT_CSV      = "data/ml_{cat}.csv"
-DETAILS_CSV  = "data/prices/ticker_details.csv"
-BARS_CSV     = "data/prices/price_bars.csv"
-DAILY_CSV    = "data/prices/daily_bars.csv"
+from config.paths import features_csv, ml_csv, TICKER_DETAILS, PRICE_BARS, DAILY_BARS
+FEATURES_CSV = features_csv("{cat}")
+OUT_CSV      = ml_csv("{cat}")
+DETAILS_CSV  = TICKER_DETAILS
+BARS_CSV     = PRICE_BARS
+DAILY_CSV    = DAILY_BARS
 
 ID_COLS      = ["datetime", "ticker", "exchange", "url", "title"]
 MKTCAP_FRESH_DAYS = 45   # max |event - details| gap before market cap is too stale to trust

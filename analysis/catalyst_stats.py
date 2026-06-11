@@ -1,7 +1,8 @@
 import pandas as pd, ast
 from collections import Counter
 
-df = pd.read_csv('data/ex_99_classified.csv')
+from config.paths import SEC_CLASSIFIED
+df = pd.read_csv(SEC_CLASSIFIED)
 total = len(df)
 is_pr = df['is_pr'].sum()
 not_pr = total - is_pr

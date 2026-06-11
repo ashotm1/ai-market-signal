@@ -45,7 +45,8 @@ import features.schemas  # registers all category schemas (requires private repo
 from regex.catalysts import classify_catalyst
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DEFAULT_INPUT   = "data/gnw_signal_articles.csv"
+from config.paths import GNW_ARTICLES, features_csv, features_batch_json
+DEFAULT_INPUT   = GNW_ARTICLES
 DEFAULT_MODEL   = "claude-sonnet-4-6"   # null discipline + enum disambiguation;
                                         # A/B against claude-haiku-4-5 via --model
 MAX_TOKENS      = 1500
@@ -59,8 +60,8 @@ _client = Anthropic()
 
 
 def _paths(category: str, output: str | None):
-    out = output or f"data/features_{category}.csv"
-    state = f"data/features_{category}_batch.json"
+    out = output or features_csv(category)
+    state = features_batch_json(category)
     return out, state
 
 

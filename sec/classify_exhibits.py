@@ -1,9 +1,9 @@
 """
 classify_exhibits.py — Classify EX-99 exhibits as press releases using heuristics only.
 
-Reads data/8k_ex99.csv, fetches each EX-99, classifies using heuristics,
+Reads data/sec/8k_ex99.csv, fetches each EX-99, classifies using heuristics,
 extracts title, and applies regex catalyst tagging.
-Saves results to data/ex_99_classified.csv with is_pr and catalyst columns.
+Saves results to data/sec/ex_99_classified.csv with is_pr and catalyst columns.
 Skips earnings-only filings (item 2.02 with no real signal items — 7.01 Reg FD not counted).
 
 Rate: BATCH_SIZE=10 per BATCH_INTERVAL=1.0s → exactly 10 req/s.
@@ -23,8 +23,9 @@ from regex.catalysts import classify_catalyst
 
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0
-INPUT_CSV = "data/8k_ex99.csv"
-OUTPUT_CSV = "data/ex_99_classified.csv"
+from config.paths import SEC_8K_EX99, SEC_CLASSIFIED, SEC_DIR, ensure_dirs
+INPUT_CSV = SEC_8K_EX99
+OUTPUT_CSV = SEC_CLASSIFIED
 
 
 async def _fetch_and_classify(client, row):
@@ -82,6 +83,7 @@ async def _run(df, fetched_urls):
 
 
 def main():
+    ensure_dirs()
     df = pd.read_csv(INPUT_CSV)
     df = df[df["ex99_url"].notna() & (df["ex99_url"] != "")].reset_index(drop=True)
     before = len(df)

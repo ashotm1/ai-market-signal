@@ -15,7 +15,8 @@ if not _SEC_USER_AGENT:
         "Set it to 'Your Name your@email.com' as required by SEC EDGAR fair-access policy."
     )
 HEADERS = {"User-Agent": _SEC_USER_AGENT}
-CIK_CACHE_FILE = "data/cik_tickers.json"
+from config.paths import SEC_CIK_CACHE, SEC_DIR, ensure_dirs
+CIK_CACHE_FILE = SEC_CIK_CACHE
 SEC_BASE = "https://www.sec.gov"
 SEC_ARCHIVES = "https://www.sec.gov/Archives/"
 

@@ -1,6 +1,6 @@
 """
-anw_signal_filter.py — build data/anw_signal_filtered.csv from the monthly ANW
-sitemap CSVs in data/anw/.
+anw_signal_filter.py — build data/anw/anw_signal_filtered.csv from the monthly ANW
+sitemap CSVs in data/anw_monthly/.
 
 ANW carries no scraped title or ticker — only (date, language, industry, url).
 The headline lives in the URL slug (lowercased, truncated to ~60 chars), so we
@@ -31,7 +31,7 @@ inspection: slug_title and catalyst. Rebuilt from scratch each run (like the bw
 filter); no append/resume because it is pure CPU, no network.
 
 Usage:
-    python scripts/anw_signal_filter.py                  # all months in data/anw/
+    python scripts/anw_signal_filter.py                  # all months in data/anw_monthly/
     python scripts/anw_signal_filter.py --from 2024-01   # 2024-01 onward
     python scripts/anw_signal_filter.py --from 2023-01 --to 2023-12
 """
@@ -47,8 +47,9 @@ from regex.catalysts import classify_catalyst, is_signal
 
 csv.field_size_limit(10**7)
 
-INPUT_DIR = "data/anw"
-OUT       = "data/anw_signal_filtered.csv"
+from config.paths import ANW_MONTHLY_DIR, ANW_SIGNAL, ANW_DIR, ensure_dirs
+INPUT_DIR = ANW_MONTHLY_DIR
+OUT       = ANW_SIGNAL
 
 _MONTH_RE = re.compile(r"anw_(\d{4}-\d{2})\.csv$")
 # Trailing "-<article id>" appended to every ANW slug, e.g. "...-and-gros-799157".
@@ -88,7 +89,7 @@ def _iter_inputs(folder, from_month, to_month):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--folder", default=INPUT_DIR,
-                   help="folder of monthly anw_*.csv (default data/anw)")
+                   help="folder of monthly anw_*.csv (default data/anw_monthly)")
     p.add_argument("--from", dest="from_month", help="start month YYYY-MM (inclusive)")
     p.add_argument("--to",   dest="to_month",   help="end month YYYY-MM (inclusive)")
     p.add_argument("--output", default=OUT, help=f"output CSV (default {OUT})")
@@ -104,6 +105,7 @@ def main():
     total = no_title = spam = no_signal = kept = 0
     spam_samples, kept_samples = [], []
 
+    ensure_dirs()
     with open(args.output, "w", encoding="utf-8", newline="") as f_out:
         w = csv.DictWriter(f_out, fieldnames=out_cols, extrasaction="ignore")
         w.writeheader()

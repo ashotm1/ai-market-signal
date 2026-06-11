@@ -9,7 +9,7 @@ Pipeline (cheapest first):
 
 Usage:
   python -m sources.prnw.prnw_classifier
-  python -m sources.prnw.prnw_classifier --input-dir data/prn_data --output data/prn_classified.csv
+  python -m sources.prnw.prnw_classifier --input-dir data/prnw_monthly --output data/prnw/prnw_classified.csv
 """
 import argparse
 import bisect
@@ -135,14 +135,16 @@ def classify_row(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir", default="data/prn_data")
-    parser.add_argument("--output", default="data/prn_classified.csv")
-    parser.add_argument("--ticker-universe", default="data/ticker_universe.csv")
+    from config.paths import PRNW_MONTHLY_DIR, PRNW_CLASSIFIED, TICKER_UNIVERSE, PRNW_DIR, ensure_dirs
+    ensure_dirs()
+    parser.add_argument("--input-dir", default=PRNW_MONTHLY_DIR)
+    parser.add_argument("--output", default=PRNW_CLASSIFIED)
+    parser.add_argument("--ticker-universe", default=TICKER_UNIVERSE)
     args = parser.parse_args()
 
-    input_files = sorted(glob.glob(os.path.join(args.input_dir, "prn_*.csv")))
+    input_files = sorted(glob.glob(os.path.join(args.input_dir, "prnw_*.csv")))
     if not input_files:
-        print(f"No prn_*.csv files found in {args.input_dir}")
+        print(f"No prnw_*.csv files found in {args.input_dir}")
         raise SystemExit(1)
 
     # Append-safe: skip URLs already classified

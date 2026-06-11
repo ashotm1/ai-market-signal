@@ -18,20 +18,20 @@ Fields split into two groups:
   * parsed (best-effort) — dateline, tickers, source company; only in body text,
                            may be blank. See the parser helpers for the rules.
 
-By default this processes EVERY monthly sitemap CSV in data/anw/ (the job the
+By default this processes EVERY monthly sitemap CSV in data/anw_monthly/ (the job the
 old run_all_anw_extract.py did, now built in — no subprocess double-hop),
-writing one output per month to data/anw_articles/anw_<month>_articles.csv.
+writing one output per month to data/anw/articles/anw_<month>_articles.csv.
 Restrict with --from/--to (YYYY-MM, like anw_scraper.py) or repoint --folder.
 Pass --input/--output instead to run a single consolidated file (e.g. a
 signal-filtered set). Each run tees all output to logs/anw_extract_<ts>.log.
 
 Usage:
-    python scripts/anw_extract_fields.py                       # all months in data/anw/
+    python scripts/anw_extract_fields.py                       # all months in data/anw_monthly/
     python scripts/anw_extract_fields.py --from 2024-01        # 2024-01 onward
     python scripts/anw_extract_fields.py --from 2023-01 --to 2023-12
     python scripts/anw_extract_fields.py --limit 50            # first 50 per month (testing)
-    python scripts/anw_extract_fields.py --input data/anw_signal_filtered.csv \
-                                         --output data/anw_signal_articles.csv
+    python scripts/anw_extract_fields.py --input data/anw/anw_signal_filtered.csv \
+                                         --output data/anw/anw_signal_articles.csv
 
 Append-safe: skips URLs already present in each output. A month that errors is
 logged and skipped; the run continues. Concurrency-limited fetches with jittered
@@ -62,11 +62,12 @@ while True:
     except OverflowError:
         _limit //= 10
 
-INPUT_DIR  = "data/anw"           # default folder of monthly sitemap CSVs
-OUTPUT_DIR = "data/anw_articles"  # per-month outputs land here
+from config.paths import ANW_MONTHLY_DIR, ANW_ARTICLES_DIR, ANW_SIGNAL, ANW_ARTICLES
+INPUT_DIR  = ANW_MONTHLY_DIR    # default folder of monthly sitemap CSVs
+OUTPUT_DIR = ANW_ARTICLES_DIR   # per-month outputs land here
 LOG_DIR    = "logs"
-INPUT_CSV  = "data/anw_signal_filtered.csv"   # --input single-file mode default
-OUTPUT_CSV = "data/anw_signal_articles.csv"   # --output single-file mode default
+INPUT_CSV  = ANW_SIGNAL         # --input single-file mode default
+OUTPUT_CSV = ANW_ARTICLES       # --output single-file mode default
 
 _MONTH_RE = re.compile(r"anw_(\d{4}-\d{2})\.csv$")
 
@@ -416,9 +417,9 @@ async def main_async(args):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--folder", default=INPUT_DIR,
-                   help="folder of monthly anw_*.csv (default data/anw)")
+                   help="folder of monthly anw_*.csv (default data/anw_monthly)")
     p.add_argument("--out-dir", dest="out_dir", default=OUTPUT_DIR,
-                   help="per-month output dir (default data/anw_articles)")
+                   help="per-month output dir (default data/anw/articles)")
     p.add_argument("--from", dest="from_month", help="start month YYYY-MM (inclusive)")
     p.add_argument("--to",   dest="to_month",   help="end month YYYY-MM (inclusive)")
     p.add_argument("--input",  default=None,

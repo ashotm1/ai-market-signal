@@ -2,8 +2,8 @@
 gnw_extract_fields.py — fetch GlobeNewswire article pages and extract
 structured fields (JSON-LD NewsArticle + selected <meta> tags).
 
-Input:  data/gnw_signal_filtered.csv (URLs + original gnw_news fields)
-Output: data/gnw_signal_articles.csv (input fields + extracted fields)
+Input:  data/gnw/gnw_signal_filtered.csv (URLs + original gnw_news fields)
+Output: data/gnw/gnw_signal_articles.csv (input fields + extracted fields)
 
 Append-safe: skip URLs already in output. Concurrency-limited fetches with
 jittered delay + bounded retries.
@@ -32,8 +32,9 @@ while True:
     except OverflowError:
         _limit //= 10
 
-INPUT_CSV  = "data/gnw_signal_filtered.csv"
-OUTPUT_CSV = "data/gnw_signal_articles.csv"
+from config.paths import GNW_SIGNAL, GNW_ARTICLES
+INPUT_CSV  = GNW_SIGNAL
+OUTPUT_CSV = GNW_ARTICLES
 
 # Original gnw_signal_filtered fields are passed through; we append these:
 EXTRACTED_FIELDS = [

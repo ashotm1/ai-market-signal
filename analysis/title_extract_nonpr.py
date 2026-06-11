@@ -26,9 +26,10 @@ from anthropic import Anthropic
 from sec.edgar import fetch_html
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-INPUT_CSV   = "data/ex_99_classified.csv"
-OUTPUT_CSV  = "data/title_extract_nonpr.csv"
-STATE_FILE  = "data/title_extract_nonpr_state.json"
+from config.paths import SEC_CLASSIFIED, TITLE_EXTRACT_NONPR, TITLE_EXTRACT_STATE
+INPUT_CSV   = SEC_CLASSIFIED
+OUTPUT_CSV  = TITLE_EXTRACT_NONPR
+STATE_FILE  = TITLE_EXTRACT_STATE
 MODEL       = "claude-haiku-4-5-20251001"
 MAX_TOKENS  = 50
 BATCH_SIZE  = 10

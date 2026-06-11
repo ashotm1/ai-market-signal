@@ -21,7 +21,8 @@ import pandas as pd
 from sec.pr_detect import extract_title
 from sec.edgar import fetch_html
 
-INPUT_CSV     = "data/ex_99_classified.csv"
+from config.paths import SEC_CLASSIFIED
+INPUT_CSV     = SEC_CLASSIFIED
 BATCH_SIZE    = 10
 BATCH_INTERVAL = 1.0  # seconds between batches (SEC rate limit)
 

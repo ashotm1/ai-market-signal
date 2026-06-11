@@ -24,8 +24,9 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-OUTPUT_DIR  = "data/anw"
-DONE_FILE   = "data/anw/sitemap_done.txt"
+from config.paths import ANW_MONTHLY_DIR, ANW_MONTHLY_DONE, ensure_dirs
+OUTPUT_DIR  = ANW_MONTHLY_DIR
+DONE_FILE   = ANW_MONTHLY_DONE
 INDEX_URL   = "https://www.accessnewswire.com/public/sitemap/index.xml"
 DELAY       = 2
 

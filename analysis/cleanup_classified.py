@@ -7,8 +7,9 @@ import ast
 import re
 import pandas as pd
 
-INPUT_CSV  = "data/ex_99_classified.csv"
-OUTPUT_CSV = "data/ex_99_classified.csv"
+from config.paths import SEC_CLASSIFIED
+INPUT_CSV  = SEC_CLASSIFIED
+OUTPUT_CSV = SEC_CLASSIFIED
 
 # ── Shared patterns (mirrors pr_detection.py) ────────────────────────────────
 

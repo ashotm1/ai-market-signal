@@ -11,7 +11,8 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from sec.edgar import fetch_html, HEADERS
 
-INPUT_CSV = "data/combined_disagreements.csv"
+from config.paths import COMBINED_DISAGREEMENTS
+INPUT_CSV = COMBINED_DISAGREEMENTS
 BATCH_SIZE = 10
 BATCH_INTERVAL = 1.0
 

@@ -16,15 +16,15 @@ Structure (consistent 2010 -> 2026):
     any financial tables).
   * dateline            -> "CITY, ST , <date> /PRNewswire/ --" at the body head.
 
-Output columns are namespaced prn_* so they never collide with the passthrough
+Output columns are namespaced prnw_* so they never collide with the passthrough
 columns (input carries datetime/issuer/url/company/ticker/catalyst). Depends on
 one input column: `url`.
 
-Input:  data/prn_signal_filtered.csv (default; override with --input)
-Output: per-year files data/prn_articles/prn_<year>_articles.csv (default, routed
+Input:  data/prnw/prnw_signal_filtered.csv (default; override with --input)
+Output: per-year files data/prnw/articles/prnw_<year>_articles.csv (default, routed
         by each row's `datetime` year), or a single file via --output.
 
-Each run tees output to logs/prn_extract_<ts>.log. Logs every non-success
+Each run tees output to logs/prnw_extract_<ts>.log. Logs every non-success
 explicitly, survives per-page parse errors, append-safe resume across files.
 """
 import argparse
@@ -51,19 +51,20 @@ while True:
     except OverflowError:
         _limit //= 10
 
-INPUT_CSV  = "data/prn_signal_filtered.csv"
-OUTPUT_DIR = "data/prn_articles"   # per-year outputs land here (default)
+from config.paths import PRNW_SIGNAL, PRNW_ARTICLES_DIR
+INPUT_CSV  = PRNW_SIGNAL
+OUTPUT_DIR = PRNW_ARTICLES_DIR     # per-year outputs land here (default)
 LOG_DIR    = "logs"
 
 EXTRACTED_FIELDS = [
-    "prn_headline",        # JSON-LD headline / og:title / h1
-    "prn_description",     # og:description (lede)
-    "prn_date_published",  # JSON-LD datePublished (authoritative, ISO+TZ)
-    "prn_date_modified",   # JSON-LD dateModified — UNRELIABLE (2018 migration)
-    "prn_keywords",        # meta keywords (issuer + industry tags)
-    "prn_image",           # JSON-LD image / og:image
-    "prn_dateline",        # CITY, ST before "/PRNewswire/"
-    "prn_tickers",         # EXCHANGE:SYM from body (input also carries ticker)
+    "prnw_headline",        # JSON-LD headline / og:title / h1
+    "prnw_description",     # og:description (lede)
+    "prnw_date_published",  # JSON-LD datePublished (authoritative, ISO+TZ)
+    "prnw_date_modified",   # JSON-LD dateModified — UNRELIABLE (2018 migration)
+    "prnw_keywords",        # meta keywords (issuer + industry tags)
+    "prnw_image",           # JSON-LD image / og:image
+    "prnw_dateline",        # CITY, ST before "/PRNewswire/"
+    "prnw_tickers",         # EXCHANGE:SYM from body (input also carries ticker)
     "article_body",        # section.release-body full text
     "article_body_len",
     "http_status",
@@ -163,14 +164,14 @@ def extract_fields(html: str) -> dict:
     # JSON-LD fields can be HTML-double-encoded (json.loads doesn't decode
     # entities like BeautifulSoup does for the body/og fields).
     return {
-        "prn_headline":       _html.unescape(headline),
-        "prn_description":    _html.unescape(meta.get("og:description", "") or _stringify(ld.get("description"))),
-        "prn_date_published": _stringify(ld.get("datePublished")),
-        "prn_date_modified":  _stringify(ld.get("dateModified")),
-        "prn_keywords":       _html.unescape(meta.get("keywords", "")),
-        "prn_image":          _stringify(ld.get("image")) or meta.get("og:image", ""),
-        "prn_dateline":       _parse_dateline(body),
-        "prn_tickers":        _parse_tickers(body),
+        "prnw_headline":       _html.unescape(headline),
+        "prnw_description":    _html.unescape(meta.get("og:description", "") or _stringify(ld.get("description"))),
+        "prnw_date_published": _stringify(ld.get("datePublished")),
+        "prnw_date_modified":  _stringify(ld.get("dateModified")),
+        "prnw_keywords":       _html.unescape(meta.get("keywords", "")),
+        "prnw_image":          _stringify(ld.get("image")) or meta.get("og:image", ""),
+        "prnw_dateline":       _parse_dateline(body),
+        "prnw_tickers":        _parse_tickers(body),
         "article_body":       body,
         "article_body_len":   str(len(body)),
     }
@@ -266,7 +267,7 @@ async def main_async(args):
         existing = [args.output] if os.path.exists(args.output) else []
     else:
         os.makedirs(args.out_dir, exist_ok=True)
-        existing = sorted(glob.glob(os.path.join(args.out_dir, "prn_*.csv")))
+        existing = sorted(glob.glob(os.path.join(args.out_dir, "prnw_*.csv")))
 
     done_urls = set()
     for path in existing:
@@ -290,7 +291,7 @@ async def main_async(args):
         key = "_single" if single else (row.get("datetime", "")[:4] or "unknown")
         if key not in writers:
             path = args.output if single else os.path.join(
-                args.out_dir, f"prn_{key}_articles.csv")
+                args.out_dir, f"prnw_{key}_articles.csv")
             new = not os.path.exists(path) or os.path.getsize(path) == 0
             fh = open(path, "a", newline="", encoding="utf-8")
             w = csv.DictWriter(fh, fieldnames=fieldnames)
@@ -332,7 +333,7 @@ def main():
     p.add_argument("--output", default=None,
                    help="single output file; omit for per-year split into --out-dir")
     p.add_argument("--out-dir", dest="out_dir", default=OUTPUT_DIR,
-                   help="per-year output dir (default data/prn_articles)")
+                   help="per-year output dir (default data/prnw/articles)")
     p.add_argument("--workers", type=int, default=6)
     p.add_argument("--delay-min", type=float, default=0.3)
     p.add_argument("--delay-max", type=float, default=1.0)
@@ -342,7 +343,7 @@ def main():
 
     os.makedirs(LOG_DIR, exist_ok=True)
     log_path = os.path.join(
-        LOG_DIR, f"prn_extract_{time.strftime('%Y%m%d_%H%M%S')}.log")
+        LOG_DIR, f"prnw_extract_{time.strftime('%Y%m%d_%H%M%S')}.log")
     log_file = open(log_path, "a", encoding="utf-8", buffering=1)
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)

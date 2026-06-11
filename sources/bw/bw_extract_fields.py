@@ -25,8 +25,8 @@ Output columns are namespaced bw_* so they never collide with passthrough
 columns (input already has datetime/ticker/exchange/title/url). Depends on one
 input column: `url`.
 
-Input:  data/bw_signal_filtered.csv (default; override with --input)
-Output: per-year files data/bw_articles/bw_<year>_articles.csv (default, routed by
+Input:  data/bw/bw_signal_filtered.csv (default; override with --input)
+Output: per-year files data/bw/articles/bw_<year>_articles.csv (default, routed by
         each row's `datetime` year), or a single file via --output.
 
 Each run tees all output to logs/bw_extract_<ts>.log with [wN] per-worker lines,
@@ -70,8 +70,9 @@ while True:
     except OverflowError:
         _limit //= 10
 
-INPUT_CSV   = "data/bw_signal_filtered.csv"
-OUTPUT_DIR  = "data/bw_articles"   # per-year outputs land here (default)
+from config.paths import BW_SIGNAL, BW_ARTICLES_DIR
+INPUT_CSV   = BW_SIGNAL
+OUTPUT_DIR  = BW_ARTICLES_DIR      # per-year outputs land here (default)
 LOG_DIR     = "logs"
 DEBUG_PORT  = 9222
 PROFILE     = r"C:\bw-chrome-profile"
@@ -417,7 +418,7 @@ def main():
     p.add_argument("--output", default=None,
                    help="single output file; omit for per-year split into --out-dir")
     p.add_argument("--out-dir", dest="out_dir", default=OUTPUT_DIR,
-                   help="per-year output dir (default data/bw_articles)")
+                   help="per-year output dir (default data/bw/articles)")
     p.add_argument("--limit", type=int, default=None, help="fetch first N (testing)")
     p.add_argument("--delay-min", type=float, default=1.5)
     p.add_argument("--delay-max", type=float, default=4.0)

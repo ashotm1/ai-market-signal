@@ -48,9 +48,10 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
-OUTPUT_CSV    = "data/bw_news.csv"
-RUNS_CSV      = "data/bw_runs.csv"
-RANGES_CSV    = "data/bw_worker_ranges.csv"
+from config.paths import BW_NEWS, BW_RUNS, BW_RANGES, ensure_dirs
+OUTPUT_CSV    = BW_NEWS
+RUNS_CSV      = BW_RUNS
+RANGES_CSV    = BW_RANGES
 LOG_DIR       = "logs"
 BASE_URL      = "https://www.businesswire.com"
 
@@ -637,7 +638,7 @@ async def worker(wid: int, ctx, state: State, args):
     """One Chrome tab scraping its assigned page range.
 
     Range model: each worker owns a persistent (start, end) stored in
-    data/bw_worker_ranges.csv. Always resumes at `start` on every run.
+    data/bw/bw_worker_ranges.csv. Always resumes at `start` on every run.
 
     Fresh worker (end == start, never scraped):
         Scrape forward from start. Stop on per-worker --dup-stop OR chunk
@@ -984,6 +985,7 @@ async def probe_once(args):
 
 
 async def main_async():
+    ensure_dirs()
     sys.stdout.reconfigure(line_buffering=True)
     os.makedirs(LOG_DIR, exist_ok=True)
     log_path = os.path.join(LOG_DIR, f"bw_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")

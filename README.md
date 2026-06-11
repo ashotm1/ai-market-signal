@@ -29,10 +29,10 @@ Run from the root with `python -m <package.module>`
 
 | Source | Scrape → list | Filter | Body extractor |
 |---|---|---|---|
-| GlobeNewswire | `ingest/gnw_scraper.py` → `gnw_news.csv` | `sources/gnw/gnw_classifier.py` → `gnw_signal_filter.py` | `sources/gnw/gnw_extract_fields.py` → `gnw_signal_articles.csv` |
-| PRNewswire | `ingest/prnw_scraper.py` → `data/prnw_data/` | `sources/prnw/prnw_classifier.py` (ticker ∈ universe) | `sources/prnw/prnw_extract_fields.py` → `data/prnw_articles/` |
-| ACCESS Newswire | `ingest/anw_scraper.py` → `data/anw/` | post-hoc (full-run, then filter) | `sources/anw/anw_extract_fields.py` → `data/anw_articles/` |
-| Business Wire | `ingest/bw_scraper.py` → `bw_news.csv` | `sources/bw/bw_signal_filter.py` | `sources/bw/bw_extract_fields.py` → `data/bw_articles/` |
+| GlobeNewswire | `ingest/gnw_scraper.py` → `data/gnw/gnw_news.csv` | `sources/gnw/gnw_classifier.py` → `gnw_signal_filter.py` | `sources/gnw/gnw_extract_fields.py` → `data/gnw/gnw_signal_articles.csv` |
+| PRNewswire | `ingest/prnw_scraper.py` → `data/prnw_monthly/` | `sources/prnw/prnw_classifier.py` (ticker ∈ universe) | `sources/prnw/prnw_extract_fields.py` → `data/prnw/articles/` |
+| ACCESS Newswire | `ingest/anw_scraper.py` → `data/anw_monthly/` | post-hoc (full-run, then filter) | `sources/anw/anw_extract_fields.py` → `data/anw/articles/` |
+| Business Wire | `ingest/bw_scraper.py` → `data/bw/bw_news.csv` | `sources/bw/bw_signal_filter.py` | `sources/bw/bw_extract_fields.py` → `data/bw/articles/` |
 
 
 Body extraction fetches each PR page and pulls the full article body. Most sources use plain `httpx`; Business Wire is behind Akamai Bot Manager so its scraper drives a real warmed Chrome over CDP instead.
@@ -63,7 +63,7 @@ An additional catalyst stream from SEC filings. [sec/pipeline.py](sec/pipeline.p
 python -m sec.pipeline --days 30 --llm --market
 ```
 
-Flow: [sec/download_idx.py](sec/download_idx.py) + [sec/parse_idx.py](sec/parse_idx.py) → `data/8k.csv` → [sec/batch_filter.py](sec/batch_filter.py) (fetch filing exhibits) → `data/8k_ex99.csv` → [sec/classify_exhibits.py](sec/classify_exhibits.py) (heuristic + regex catalyst) → `data/ex_99_classified.csv` → [sec/classify_catalyst_llm.py](sec/classify_catalyst_llm.py) *(`--llm`, Haiku reclass of `catalyst=other`)* → [market/fetch_market_data.py](market/fetch_market_data.py) *(`--market`, Polygon prices + `<$500M` cap filter)*. This stream is a cross-check / coverage backstop — an 8-K confirms a release was material enough to file — rather than the primary feature feed, which comes from the newswire bodies above.
+Flow: [sec/download_idx.py](sec/download_idx.py) + [sec/parse_idx.py](sec/parse_idx.py) → `data/sec/8k.csv` → [sec/batch_filter.py](sec/batch_filter.py) (fetch filing exhibits) → `data/sec/8k_ex99.csv` → [sec/classify_exhibits.py](sec/classify_exhibits.py) (heuristic + regex catalyst) → `data/sec/ex_99_classified.csv` → [sec/classify_catalyst_llm.py](sec/classify_catalyst_llm.py) *(`--llm`, Haiku reclass of `catalyst=other`)* → [market/fetch_market_data.py](market/fetch_market_data.py) *(`--market`, Polygon prices + `<$500M` cap filter)*. This stream is a cross-check / coverage backstop — an 8-K confirms a release was material enough to file — rather than the primary feature feed, which comes from the newswire bodies above.
 
 ---
 

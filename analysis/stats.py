@@ -4,7 +4,7 @@ stats.py — Print pipeline stats based on current CSV state.
 import os
 import pandas as pd
 
-DATA = "data"
+from config.paths import SEC_8K, SEC_8K_EX99, SEC_CLASSIFIED, PRICES_SEC
 
 
 def section(title):
@@ -13,8 +13,7 @@ def section(title):
     print(f"{'─' * 50}")
 
 
-def load(filename, **kwargs):
-    path = os.path.join(DATA, filename)
+def load(path, **kwargs):
     if not os.path.exists(path):
         return None
     return pd.read_csv(path, **kwargs)
@@ -22,13 +21,13 @@ def load(filename, **kwargs):
 
 def main():
     # ── 8k.csv ────────────────────────────────────────
-    df_8k = load("8k.csv")
+    df_8k = load(SEC_8K)
     if df_8k is not None:
         section("8k.csv")
         print(f"  Total 8-K filings:  {len(df_8k)}")
 
     # ── 8k_ex99.csv ───────────────────────────────────
-    df_ex99 = load("8k_ex99.csv")
+    df_ex99 = load(SEC_8K_EX99)
     if df_ex99 is not None:
         section("8k_ex99.csv")
         has_ex99 = df_ex99["ex99_url"].notna() & (df_ex99["ex99_url"] != "")
@@ -37,7 +36,7 @@ def main():
         print(f"  No EX-99:           {(~has_ex99).sum()}")
 
     # ── ex_99_classified.csv ──────────────────────────────────
-    df_ex = load("ex_99_classified.csv")
+    df_ex = load(SEC_CLASSIFIED)
     if df_ex is not None:
         section("ex_99_classified.csv — classified exhibits")
         total = len(df_ex)
@@ -61,10 +60,10 @@ def main():
                 pct = fired / len(df_prs) * 100
                 print(f"    {h}  fired {fired:>5}/{len(df_prs)}  ({pct:.1f}%)")
 
-    # ── price_data.csv ────────────────────────────────
-    df_prices = load("price_data.csv")
+    # ── sec_price_data.csv ────────────────────────────────
+    df_prices = load(PRICES_SEC)
     if df_prices is not None:
-        section("price_data.csv")
+        section("sec_price_data.csv")
         print(f"  Total rows:         {len(df_prices)}")
         has_price = df_prices["price_t0"].notna()
         print(f"  Has price data:     {has_price.sum()}")

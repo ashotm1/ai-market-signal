@@ -8,7 +8,7 @@ Pipeline:
 
 Usage:
   python scripts/gnw_classifier.py
-  python scripts/gnw_classifier.py --input data/gnw_news.csv --output data/gnw_classified.csv
+  python scripts/gnw_classifier.py --input data/gnw/gnw_news.csv --output data/gnw/gnw_classified.csv
 """
 import argparse
 import csv
@@ -55,9 +55,11 @@ def classify_row(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input",  default="data/gnw_news.csv")
-    parser.add_argument("--output", default="data/gnw_classified.csv")
-    parser.add_argument("--ticker-universe", default="data/ticker_universe.csv")
+    from config.paths import GNW_NEWS, GNW_CLASSIFIED, TICKER_UNIVERSE, GNW_DIR, ensure_dirs
+    ensure_dirs()
+    parser.add_argument("--input",  default=GNW_NEWS)
+    parser.add_argument("--output", default=GNW_CLASSIFIED)
+    parser.add_argument("--ticker-universe", default=TICKER_UNIVERSE)
     args = parser.parse_args()
 
     # Append-safe: skip URLs already classified

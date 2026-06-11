@@ -3,8 +3,9 @@ import os
 import re
 import pandas as pd
 
+from config.paths import SEC_DIR, SEC_8K, SEC_8K_PARQUET, ensure_dirs
 IDX_DIR = "idx"
-OUTPUT_DIR = "data"
+OUTPUT_DIR = SEC_DIR
 
 
 def _parse_fixed(path):
@@ -44,10 +45,10 @@ def parse_idx_file(path):
 
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    ensure_dirs()
 
-    output_csv = os.path.join(OUTPUT_DIR, "8k.csv")
-    output_parquet = os.path.join(OUTPUT_DIR, "8k.parquet")
+    output_csv = SEC_8K
+    output_parquet = SEC_8K_PARQUET
 
     if os.path.exists(output_csv):
         existing = pd.read_csv(output_csv, usecols=["idx_file"])
