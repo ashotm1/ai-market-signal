@@ -1,5 +1,5 @@
 """
-prn_scraper.py — Convert PRN monthly gz sitemaps to CSV.
+prnw_scraper.py — Convert PRNewswire monthly gz sitemaps to CSV.
 
 Fetches sitemap-gz.xml, downloads each monthly .xml.gz, decompresses,
 and extracts all press release entries: url, datetime, issuer, image_url.
@@ -7,10 +7,10 @@ and extracts all press release entries: url, datetime, issuer, image_url.
 Fields: date, time, datetime, issuer, image_url, url
 
 Usage:
-    python scraper/prn_scraper.py                           # all months
-    python scraper/prn_scraper.py --from 2022-01            # from month onwards
-    python scraper/prn_scraper.py --from 2022-01 --to 2024-12
-    python scraper/prn_scraper.py --refetch                 # re-process already-done months
+    python -m ingest.prnw_scraper                           # all months
+    python -m ingest.prnw_scraper --from 2022-01            # from month onwards
+    python -m ingest.prnw_scraper --from 2022-01 --to 2024-12
+    python -m ingest.prnw_scraper --refetch                 # re-process already-done months
 """
 
 import argparse

@@ -1,5 +1,5 @@
 """
-prn_classifier.py — Classify PRN CSV rows: title, company, ticker, exchange, catalyst tags.
+prnw_classifier.py — Classify PRNewswire CSV rows: title, company, ticker, exchange, catalyst tags.
 
 Pipeline (cheapest first):
   url    → title (strip slug)
@@ -8,8 +8,8 @@ Pipeline (cheapest first):
   ticker → catalyst tags (only if listed on NYSE/NASDAQ; else 'unlisted')
 
 Usage:
-  python scripts/prn_classifier.py
-  python scripts/prn_classifier.py --input-dir data/prn_data --output data/prn_classified.csv
+  python -m sources.prnw.prnw_classifier
+  python -m sources.prnw.prnw_classifier --input-dir data/prn_data --output data/prn_classified.csv
 """
 import argparse
 import bisect

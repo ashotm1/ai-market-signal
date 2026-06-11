@@ -30,7 +30,7 @@ Run from the root with `python -m <package.module>`
 | Source | Scrape → list | Filter | Body extractor |
 |---|---|---|---|
 | GlobeNewswire | `ingest/gnw_scraper.py` → `gnw_news.csv` | `sources/gnw/gnw_classifier.py` → `gnw_signal_filter.py` | `sources/gnw/gnw_extract_fields.py` → `gnw_signal_articles.csv` |
-| PRNewswire | `ingest/prn_scraper.py` → `data/prn_data/` | `sources/prnw/prn_classifier.py` (ticker ∈ universe) | `sources/prnw/prn_extract_fields.py` → `data/prn_articles/` |
+| PRNewswire | `ingest/prnw_scraper.py` → `data/prnw_data/` | `sources/prnw/prnw_classifier.py` (ticker ∈ universe) | `sources/prnw/prnw_extract_fields.py` → `data/prnw_articles/` |
 | ACCESS Newswire | `ingest/anw_scraper.py` → `data/anw/` | post-hoc (full-run, then filter) | `sources/anw/anw_extract_fields.py` → `data/anw_articles/` |
 | Business Wire | `ingest/bw_scraper.py` → `bw_news.csv` | `sources/bw/bw_signal_filter.py` | `sources/bw/bw_extract_fields.py` → `data/bw_articles/` |
 

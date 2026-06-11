@@ -1,5 +1,5 @@
 """
-prn_extract_fields.py — fetch PRNewswire article pages and extract structured
+prnw_extract_fields.py — fetch PRNewswire article pages and extract structured
 fields.
 
 PRN (Cision) is httpx-fetchable (no bot wall, unlike BusinessWire) and exposes a

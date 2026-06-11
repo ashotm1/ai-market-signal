@@ -14,7 +14,7 @@ import argparse
 import csv
 import os
 
-from sources.prnw.prn_classifier import build_ticker_index, lookup_ticker, _LISTED_EXCHANGES
+from sources.prnw.prnw_classifier import build_ticker_index, lookup_ticker, _LISTED_EXCHANGES
 from regex.catalysts import classify_catalyst
 
 
