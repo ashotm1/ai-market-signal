@@ -220,12 +220,14 @@ def load_last_bar_dates(path: str) -> dict:
     return df.groupby("ticker")["bar_date"].max().to_dict()
 
 
-def load_done_details() -> set:
-    """Set of (ticker, event_date) already stored in ticker_details."""
+def load_done_details() -> tuple[set, dict]:
+    """Returns (done set of (ticker, date_str), {ticker: market_cap} for mktcap gate)."""
     if not os.path.exists(TICKER_DETAILS):
-        return set()
-    df = pd.read_csv(TICKER_DETAILS, usecols=["ticker", "date_str"], on_bad_lines="skip")
-    return set(zip(df["ticker"], df["date_str"]))
+        return set(), {}
+    df = pd.read_csv(TICKER_DETAILS, usecols=["ticker", "date_str", "market_cap"], on_bad_lines="skip")
+    done = set(zip(df["ticker"], df["date_str"]))
+    mc_map = df.dropna(subset=["market_cap"]).groupby("ticker")["market_cap"].last().to_dict()
+    return done, mc_map
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -328,7 +330,7 @@ async def run_nw(sources: list[str] | None = None, catalyst: str | None = None):
     done_1min    = load_done_1min()
     last_10min   = load_last_bar_dates(BARS_10MIN)
     last_daily   = load_last_bar_dates(BARS_DAILY_NW)
-    done_details = load_done_details()
+    done_details, known_mc = load_done_details()
 
     by_ticker: dict[str, list] = {}
     for _, row in events.iterrows():
@@ -410,13 +412,9 @@ async def run_nw(sources: list[str] | None = None, catalyst: str | None = None):
                     _append(TICKER_DETAILS, [_flatten_details(ticker, e["event_date"], det) for e in events_need_details])
                     _log(f"  {ticker}  det=ok  mktcap={mc/1e6:.0f}M" if mc else f"  {ticker}  det=ok  mktcap=unknown")
                 elif events_need_1min or need_10min or need_daily:
-                    if os.path.exists(TICKER_DETAILS):
-                        det_df = pd.read_csv(TICKER_DETAILS, usecols=["ticker", "market_cap"], on_bad_lines="skip")
-                        row = det_df[det_df["ticker"] == ticker]
-                        if not row.empty:
-                            mc = row["market_cap"].iloc[-1]
-                            if mc and mc > MAX_MKTCAP:
-                                return
+                    mc = known_mc.get(ticker)
+                    if mc and mc > MAX_MKTCAP:
+                        return
 
                 # ── 1-min: per-event tight window ─────────────────────────────
                 for ev in events_need_1min:
@@ -479,7 +477,7 @@ async def run_nw(sources: list[str] | None = None, catalyst: str | None = None):
         for p in write_header:
             _repair_csv(p)
 
-    print(f"\nDone. API calls: {api_n['n']}")
+    print("\nDone.")
     for p, n in written.items():
         if n:
             print(f"  {n:>8} rows → {p}")
